@@ -34,7 +34,8 @@ class SlackClient:
     def notify_new_ticket(self, ticket_key: str, summary: str, ticket_url: str,
                           format1_qty: int, format2_qty: int, format3_qty: int,
                           operator_entity: str, csv_qty: int = 0,
-                          multiformat: bool = False, deadline: str = "") -> dict:
+                          multiformat: bool = False, deadline: str = "",
+                          plan: dict | None = None) -> dict:
 
         # Mostrar formatos con nombres correctos
         format_lines = []
@@ -63,11 +64,36 @@ class SlackClient:
                                f"{formats_text}"
                                f"{deadline_text}"
                                f"{multiformat_warning}")}},
-            {"type": "divider"},
-            {"type": "section",
-             "text": {"type": "mrkdwn",
-                      "text": "Verifica en Jira que el formato es correcto y responde *ok* en este hilo para arrancar. El bot esperara hasta 1 hora."}}
         ]
+
+        # Bloque de PLAN si el caller lo provee: nombre canonico del archivo,
+        # duracion, bitrate default y tamanyo estimado para que el usuario
+        # decida con info real.
+        if plan:
+            plan_lines = []
+            if plan.get("filename"):
+                plan_lines.append(f"• Archivo: `{plan['filename']}`")
+            if plan.get("duration_s") is not None:
+                plan_lines.append(f"• Duracion: {plan['duration_s']:.1f}s")
+            if plan.get("bitrate_mbps") is not None:
+                plan_lines.append(f"• Bitrate: {plan['bitrate_mbps']} Mbps")
+            if plan.get("estimated_size_mb") is not None:
+                plan_lines.append(f"• Tamanyo estimado: ~{plan['estimated_size_mb']:.1f} MB")
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn",
+                         "text": "*🎯 Plan de procesado:*\n" + "\n".join(plan_lines)},
+            })
+
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": ("Responde en este hilo:\n"
+                                         "• `ok` → procesar con el plan\n"
+                                         "• `ok 20mbps` (o `ok 20`) → forzar bitrate\n"
+                                         "• `no` → cancelar este ticket\n"
+                                         "Timeout 1 hora.")}})
+
         r = self.client.chat_postMessage(
             channel=self.channel_id,
             text=f"Nuevo ticket CSV: {ticket_key}",
@@ -123,6 +149,85 @@ class SlackClient:
                 log.warning(f"Error leyendo hilo {thread_ts}: {e}")
             time.sleep(poll_interval)
         log.info(f"Timeout esperando yes/no en hilo {thread_ts}")
+        return None
+
+    def wait_for_ticket_response(self, channel: str, message_ts: str,
+                                  timeout: int = 3600, poll_interval: int = 15
+                                  ) -> dict | None:
+        """Versión ampliada de wait_for_confirmation que devuelve la accion
+        elegida por el usuario y un posible override de bitrate.
+
+        Devuelve dict:
+          {'action': 'ok',     'bitrate_override': int|None}  # procesar
+          {'action': 'cancel', 'bitrate_override': None}      # cancelar
+          None                                                # timeout
+
+        Patrones que reconoce (case-insensitive, en cualquier parte del texto):
+          'ok' / 'si' / 'sí' / 'yes' / 'dale' / 'adelante' / 'procesar' / 'go'
+            con un numero opcional seguido de 'mbps' o solo (ej. 'ok 20mbps')
+            -> action='ok', bitrate_override=20
+          'no' / 'cancel' / 'cancelar' / 'salta' / 'saltar' / 'skip'
+            -> action='cancel'
+        """
+        import re as _re
+        if channel != self.channel_id:
+            log.warning(f"Intento de leer canal no autorizado: {channel}. Ignorado.")
+            return None
+
+        deadline = time.time() + timeout
+        CONFIRM_WORDS = {"ok", "si", "sí", "yes", "dale", "adelante", "procesar", "go"}
+        CANCEL_WORDS = {"no", "cancel", "cancelar", "salta", "saltar", "skip"}
+        BITRATE_RE = _re.compile(r"\b(\d{1,3})\s*(?:mbps|m)?\b", _re.IGNORECASE)
+        log.info(f"Esperando respuesta en hilo del canal #{self.channel}...")
+
+        while time.time() < deadline:
+            try:
+                r = self.client.conversations_replies(
+                    channel=self.channel_id, ts=message_ts, limit=20,
+                )
+                for msg in r.get("messages", [])[1:]:
+                    if msg.get("bot_id"):
+                        continue
+                    text = msg.get("text", "").strip().lower()
+                    words = set(text.split())
+                    if words & CANCEL_WORDS:
+                        log.info(f"Respuesta cancel en hilo: {text!r}")
+                        return {"action": "cancel", "bitrate_override": None}
+                    if words & CONFIRM_WORDS:
+                        # Buscar bitrate override en cualquier parte del texto
+                        override = None
+                        for m in BITRATE_RE.finditer(text):
+                            val = int(m.group(1))
+                            # Filtro razonable: bitrate entre 1 y 60 Mbps
+                            if 1 <= val <= 60:
+                                override = val
+                                break
+                        log.info(f"Respuesta ok en hilo: {text!r} (override={override})")
+                        return {"action": "ok", "bitrate_override": override}
+
+                # status callback igual que en wait_for_confirmation
+                if self.status_callback:
+                    try:
+                        history = self.client.conversations_history(
+                            channel=self.channel_id, limit=5
+                        )
+                        for hmsg in history.get("messages", []):
+                            hmsg_text = hmsg.get("text", "").strip().lower()
+                            hmsg_ts = hmsg.get("ts", "")
+                            hmsg_bot = hmsg.get("bot_id", "")
+                            if hmsg_text == "status" and not hmsg_bot and hmsg_ts not in self._seen_status:
+                                self._seen_status.add(hmsg_ts)
+                                status_text = self.status_callback()
+                                self.client.chat_postMessage(
+                                    channel=self.channel_id,
+                                    text=status_text,
+                                    thread_ts=hmsg_ts
+                                )
+                    except Exception as e:
+                        log.warning(f"Error leyendo status durante espera: {e}")
+            except SlackApiError as e:
+                log.warning(f"Error leyendo hilo: {e}")
+            time.sleep(poll_interval)
         return None
 
     def wait_for_confirmation(self, channel: str, message_ts: str,

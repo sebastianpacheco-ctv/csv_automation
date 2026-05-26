@@ -494,7 +494,43 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
 
-    # ── 1. Notificar en Slack ──────────────────────────────────────────────
+    # ── 1. Pre-confirmacion: descargar + probar duracion + calcular plan ──
+    # Antes de pedir 'ok' al usuario, descargamos el adjunto y sacamos
+    # duracion para poder mostrarle nombre canonico + bitrate + tamanyo
+    # estimado. Asi el usuario decide con info real.
+    tmp_dir = Path(os.getenv("TMP_DIR", "./tmp")) / ticket_key
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    input_path = jira.download_video(issue, tmp_dir)
+    if not input_path:
+        transfer_url = jira.find_transfer_link(issue)
+        if transfer_url:
+            slack.send_message(
+                f"⚠️ *{ticket_key}*: No pude descargar el video automaticamente.\n"
+                f"Descargalo y adjuntalo al ticket: {transfer_url}"
+            )
+        else:
+            slack.send_message(f"❌ *{ticket_key}*: No se encontro video adjunto ni link.")
+        log.warning(f"{ticket_key}: sin video, ticket saltado (queda en seen_tickets)")
+        return
+
+    plan = None
+    try:
+        duration_s = converter.get_duration(input_path)
+        default_bitrate = (converter.bitrate_short if duration_s <= converter.duration_threshold
+                           else converter.bitrate_long)
+        canonical_stem = _build_canonical_filename(summary)
+        # Estimacion: video + audio AAC (~0.256 Mbps) en duration_s segundos
+        estimated_mb = (default_bitrate + 0.256) * duration_s / 8
+        plan = {
+            "filename": f"{canonical_stem}.mp4",
+            "duration_s": duration_s,
+            "bitrate_mbps": default_bitrate,
+            "estimated_size_mb": estimated_mb,
+        }
+    except Exception as e:
+        log.warning(f"{ticket_key}: no se pudo computar plan ({e}), notifico sin plan")
+
     msg = slack.notify_new_ticket(
         ticket_key=ticket_key,
         summary=summary,
@@ -506,21 +542,30 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         csv_qty=get_csv_quantity(issue),
         multiformat=is_multiformat_ticket(issue),
         deadline=_format_deadline(fields.get("customfield_11300") or fields.get("duedate") or ""),
+        plan=plan,
     )
     log.info(f"Slack notificado — ts: {msg['ts']}")
 
-    # ── 2. Esperar "ok" en el hilo ────────────────────────────────────────
-    confirmed = slack.wait_for_confirmation(msg["channel"], msg["ts"], timeout=3600)
-    if not confirmed:
+    # ── 2. Esperar respuesta en el hilo (ok / ok Nmbps / no) ──────────────
+    response = slack.wait_for_ticket_response(msg["channel"], msg["ts"], timeout=3600)
+    if response is None:
         slack.send_message(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
         return
+    if response.get("action") == "cancel":
+        slack.send_message(f"❌ *{ticket_key}* cancelado por el usuario.")
+        return
 
-    slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
+    bitrate_override = response.get("bitrate_override")
+    if bitrate_override:
+        slack.send_message(
+            f"✅ Confirmado con bitrate forzado *{bitrate_override} Mbps*. "
+            f"Procesando *{ticket_key}*..."
+        )
+    else:
+        slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
 
     # ── 3. Cambiar estado a To Build (Triage → To Build) ──────────────────
-    # Workflow real: Triage --[Send to Operations]--> To Build --[Send to Building]--> Building
-    # El bot pone el ticket en To Build al empezar; cuando termina lo pasa a Building
-    # para que el equipo lo revise.
+    # Workflow real: Triage --[Send to Operations]--> To Build --[Start Building]--> Building
     try:
         transitions = jira.get_transitions(ticket_key)
         if "Send to Operations" in transitions:
@@ -532,28 +577,12 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     except Exception as e:
         log.warning(f"No se pudo cambiar estado a To Build: {e}")
 
-    # ── 4-8. Proceso (revert a To Build si falla) ─────────────────────────
+    # ── 4-8. Proceso ──────────────────────────────────────────────────────
     try:
-        # ── 4. Descargar video ────────────────────────────────────────────
-        tmp_dir = Path(os.getenv("TMP_DIR", "./tmp")) / ticket_key
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        input_path = jira.download_video(issue, tmp_dir)
-        if not input_path:
-            transfer_url = jira.find_transfer_link(issue)
-            if transfer_url:
-                slack.send_message(
-                    f"⚠️ *{ticket_key}*: No pude descargar el video automaticamente.\n"
-                    f"Descargalo y adjuntalo al ticket: {transfer_url}"
-                )
-            else:
-                slack.send_message(f"❌ *{ticket_key}*: No se encontro video adjunto ni link.")
-            raise RuntimeError("No se encontro video")
-
         slack.send_message(f"📥 Descargado: `{input_path.name}` — convirtiendo...")
 
-        # ── 5. Convertir ──────────────────────────────────────────────────
-        output_path = converter.convert(input_path)
+        # ── 5. Convertir (override opcional de bitrate) ───────────────────
+        output_path = converter.convert(input_path, override_bitrate_mbps=bitrate_override)
         if not output_path:
             raise RuntimeError("Error en conversion FFmpeg")
 

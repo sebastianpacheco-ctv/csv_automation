@@ -66,23 +66,32 @@ class SlackClient:
                                f"{multiformat_warning}")}},
         ]
 
-        # Bloque de PLAN si el caller lo provee: nombre canonico del archivo,
-        # duracion, bitrate default y tamanyo estimado para que el usuario
-        # decida con info real.
-        if plan:
-            plan_lines = []
-            if plan.get("filename"):
-                plan_lines.append(f"• Archivo: `{plan['filename']}`")
-            if plan.get("duration_s") is not None:
-                plan_lines.append(f"• Duracion: {plan['duration_s']:.1f}s")
-            if plan.get("bitrate_mbps") is not None:
-                plan_lines.append(f"• Bitrate: {plan['bitrate_mbps']} Mbps")
-            if plan.get("estimated_size_mb") is not None:
-                plan_lines.append(f"• Tamanyo estimado: ~{plan['estimated_size_mb']:.1f} MB")
+        # Bloque de PLAN si el caller lo provee. Formato:
+        #   plan = {"videos": [{canonical, duration_s, bitrate_mbps, estimated_size_mb}, ...]}
+        # Un ticket puede tener 1 o varios videos; cada uno se procesa como
+        # creative separado.
+        if plan and plan.get("videos"):
+            videos = plan["videos"]
+            n = len(videos)
+            header = (f"*🎯 Plan de procesado* ({n} videos → {n} creatives):"
+                      if n > 1 else "*🎯 Plan de procesado:*")
+            chunks = [header]
+            for i, v in enumerate(videos, start=1):
+                prefix = f"*Video {i}:* " if n > 1 else ""
+                line = prefix + f"`{v.get('canonical','?')}.mp4`"
+                meta = []
+                if v.get("duration_s") is not None:
+                    meta.append(f"{v['duration_s']:.1f}s")
+                if v.get("bitrate_mbps") is not None:
+                    meta.append(f"{v['bitrate_mbps']} Mbps")
+                if v.get("estimated_size_mb") is not None:
+                    meta.append(f"~{v['estimated_size_mb']:.1f} MB")
+                if meta:
+                    line += "  (" + " · ".join(meta) + ")"
+                chunks.append(line)
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn",
-                         "text": "*🎯 Plan de procesado:*\n" + "\n".join(plan_lines)},
+                "text": {"type": "mrkdwn", "text": "\n".join(chunks)},
             })
 
         blocks.append({"type": "divider"})

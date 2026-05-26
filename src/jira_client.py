@@ -114,12 +114,61 @@ class JiraClient:
         log.info(f"Jira: {len(issues)} tickets en cola Video Operations")
         return issues
 
+    @staticmethod
+    def _is_bot_attachment(filename: str) -> bool:
+        """True si el adjunto fue subido por el bot (convertido), no por el
+        cliente. El bot sube con sufijo _STANDARD_VIDEO_CONVERTED (legacy) o
+        con el nombre canonico que termina en _CTV_CSV[_Vn]. No hay que
+        re-procesar esos.
+        """
+        stem = Path(filename).stem.upper()
+        if "_STANDARD_VIDEO_CONVERTED" in stem:
+            return True
+        # Nombre canonico del bot: termina en _CTV_CSV o _CTV_CSV_V<n>
+        import re as _re
+        if _re.search(r"_CTV_CSV(_V\d+)?$", stem):
+            return True
+        return False
+
+    def download_all_videos(self, issue: dict, dest_dir: Path) -> list[Path]:
+        """Descarga TODOS los videos originales del cliente adjuntos al ticket.
+        Ignora los adjuntos que el propio bot subio (convertidos). Si no hay
+        adjuntos, intenta links directos / de servicio (devuelve lista de 0-1).
+
+        Devuelve lista de Paths descargados (puede ser vacia).
+        """
+        fields = issue.get("fields", {})
+        downloaded: list[Path] = []
+
+        # ── Adjuntos de video del cliente ─────────────────────────────────
+        for att in fields.get("attachment", []):
+            filename = att.get("filename", "")
+            ext = Path(filename).suffix.lower()
+            if self._is_bot_attachment(filename):
+                log.info(f"Ignorando adjunto del bot: {filename}")
+                continue
+            if ext in VIDEO_EXTENSIONS:
+                log.info(f"Adjunto de vídeo del cliente: {filename}")
+                try:
+                    p = self._download_url(att["content"], dest_dir / filename)
+                    downloaded.append(p)
+                except Exception as e:
+                    log.warning(f"No se pudo bajar {filename}: {e}")
+
+        if downloaded:
+            return downloaded
+
+        # ── Sin adjuntos: buscar links (devuelve 0-1) ─────────────────────
+        single = self.download_video(issue, dest_dir)
+        return [single] if single else []
+
     def download_video(self, issue: dict, dest_dir: Path) -> Path | None:
         """
-        Obtiene el vídeo del ticket:
+        Obtiene UN vídeo del ticket (el primero que encuentre):
           1. Adjuntos con extensión de vídeo (.mp4, .mov…)
           2. Links directos a .mp4/.mov en descripción o comentarios
           3. Links de servicios (WeTransfer, Google Drive, Dropbox, etc.)
+        Se mantiene por compatibilidad y para el fallback de links.
         """
         fields = issue.get("fields", {})
 
@@ -127,9 +176,8 @@ class JiraClient:
         for att in fields.get("attachment", []):
             filename = att.get("filename", "")
             ext = Path(filename).suffix.lower()
-            # Ignorar archivos ya convertidos por el bot
-            if "_STANDARD_VIDEO_CONVERTED" in filename:
-                log.info(f"Ignorando adjunto ya convertido: {filename}")
+            if self._is_bot_attachment(filename):
+                log.info(f"Ignorando adjunto del bot: {filename}")
                 continue
             if ext in VIDEO_EXTENSIONS:
                 log.info(f"Adjunto de vídeo encontrado: {filename}")

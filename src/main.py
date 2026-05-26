@@ -320,6 +320,56 @@ def _build_done_comment(studio_url: str | None,
     return {"type": "doc", "version": 1, "content": paragraphs}
 
 
+def _build_done_comment_multi(results: list[dict], total: int) -> dict:
+    """Comentario ADF agregando N videos procesados. Cada result trae:
+    {canonical, studio_url, video_id, creative_id, attached_filename,
+     attach_skip_reason, studio_error}.
+    """
+    content = []
+    if total > 1:
+        content.append({"type": "paragraph", "content": [
+            {"type": "text", "text": f"✅ {total} videos CSV/COV convertidos y procesados."},
+        ]})
+    else:
+        content.append({"type": "paragraph", "content": [
+            {"type": "text", "text": "✅ Video CSV/COV convertido y procesado."},
+        ]})
+
+    for i, r in enumerate(results, start=1):
+        label = f"Video {i} — " if total > 1 else ""
+        # Linea de Studio
+        if r.get("studio_url"):
+            content.append({"type": "paragraph", "content": [
+                {"type": "text", "text": f"{label}Preview Studio: "},
+                {"type": "text", "text": r["studio_url"],
+                 "marks": [{"type": "link", "attrs": {"href": r["studio_url"]}}]},
+            ]})
+        elif r.get("studio_error"):
+            content.append({"type": "paragraph", "content": [
+                {"type": "text", "text": f"{label}⚠️ Studio no termino ("},
+                {"type": "text", "text": r["studio_error"], "marks": [{"type": "code"}]},
+                {"type": "text", "text": "). Cuando el video este COMPLETED el bot crea el creative, o hacelo manual."},
+            ]})
+        # Linea de adjunto
+        if r.get("attached_filename"):
+            content.append({"type": "paragraph", "content": [
+                {"type": "text", "text": f"{label}Archivo adjuntado: "},
+                {"type": "text", "text": r["attached_filename"], "marks": [{"type": "code"}]},
+            ]})
+        elif r.get("attach_skip_reason"):
+            content.append({"type": "paragraph", "content": [
+                {"type": "text", "text": f"{label}⚠️ .mp4 no adjuntado: "},
+                {"type": "text", "text": r["attach_skip_reason"], "marks": [{"type": "code"}]},
+            ]})
+
+    content.append({"type": "paragraph", "content": [
+        {"type": "text",
+         "text": "Nota: los adjuntos originales pueden borrarse manualmente si "
+                 "ya no se necesitan. El bot nunca borra adjuntos."},
+    ]})
+    return {"type": "doc", "version": 1, "content": content}
+
+
 def _cleanup_ticket_files(ticket_dir: Path) -> None:
     """Borra .mp4 raw + convertido tras procesar con exito.
     Conserva .studio_video_id (idempotencia) y cualquier otro fichero no .mp4.
@@ -556,15 +606,15 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         log.info(f"{ticket_key}: skip procesado por QR ({qr_url[:80]})")
         return
 
-    # ── 1. Pre-confirmacion: descargar + probar duracion + calcular plan ──
-    # Antes de pedir 'ok' al usuario, descargamos el adjunto y sacamos
-    # duracion para poder mostrarle nombre canonico + bitrate + tamanyo
-    # estimado. Asi el usuario decide con info real.
+    # ── 1. Pre-confirmacion: descargar TODOS los videos + plan por video ──
+    # Un ticket puede traer 1 o varios .mp4 originales. El bot procesa
+    # CADA uno como un creative separado en Studio. Antes de pedir 'ok',
+    # bajamos todos y sacamos duracion para mostrar el plan completo.
     tmp_dir = Path(os.getenv("TMP_DIR", "./tmp")) / ticket_key
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    input_path = jira.download_video(issue, tmp_dir)
-    if not input_path:
+    video_paths = jira.download_all_videos(issue, tmp_dir)
+    if not video_paths:
         transfer_url = jira.find_transfer_link(issue)
         if transfer_url:
             slack.send_message(
@@ -576,22 +626,25 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         log.warning(f"{ticket_key}: sin video, ticket saltado (queda en seen_tickets)")
         return
 
-    plan = None
-    try:
-        duration_s = converter.get_duration(input_path)
-        default_bitrate = (converter.bitrate_short if duration_s <= converter.duration_threshold
-                           else converter.bitrate_long)
-        canonical_stem = _build_canonical_filename(summary)
-        # Estimacion: video + audio AAC (~0.256 Mbps) en duration_s segundos
-        estimated_mb = (default_bitrate + 0.256) * duration_s / 8
-        plan = {
-            "filename": f"{canonical_stem}.mp4",
-            "duration_s": duration_s,
-            "bitrate_mbps": default_bitrate,
-            "estimated_size_mb": estimated_mb,
-        }
-    except Exception as e:
-        log.warning(f"{ticket_key}: no se pudo computar plan ({e}), notifico sin plan")
+    canonical_stem = _build_canonical_filename(summary)
+    multi = len(video_paths) > 1
+    # Plan por video: nombre canonico (con _Vn si hay varios), duracion,
+    # bitrate default y tamanyo estimado.
+    video_plans = []
+    for i, vp in enumerate(video_paths, start=1):
+        cname = f"{canonical_stem}_V{i}" if multi else canonical_stem
+        try:
+            dur = converter.get_duration(vp)
+            br = (converter.bitrate_short if dur <= converter.duration_threshold
+                  else converter.bitrate_long)
+            est = (br + 0.256) * dur / 8
+        except Exception as e:
+            log.warning(f"{ticket_key}: no se pudo medir {vp.name} ({e})")
+            dur, br, est = None, None, None
+        video_plans.append({
+            "path": vp, "canonical": cname,
+            "duration_s": dur, "bitrate_mbps": br, "estimated_size_mb": est,
+        })
 
     msg = slack.notify_new_ticket(
         ticket_key=ticket_key,
@@ -604,9 +657,9 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         csv_qty=get_csv_quantity(issue),
         multiformat=is_multiformat_ticket(issue),
         deadline=_format_deadline(fields.get("customfield_11300") or fields.get("duedate") or ""),
-        plan=plan,
+        plan={"videos": video_plans},
     )
-    log.info(f"Slack notificado — ts: {msg['ts']}")
+    log.info(f"Slack notificado — ts: {msg['ts']} ({len(video_plans)} video(s))")
 
     # Helper: agrupa todos los mensajes de progreso de este ticket en el hilo
     # de la notificacion inicial, manteniendo el canal principal limpio.
@@ -646,211 +699,138 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     except Exception as e:
         log.warning(f"No se pudo cambiar estado a To Build: {e}")
 
-    # ── 4-8. Proceso ──────────────────────────────────────────────────────
-    try:
-        post_thread(f"📥 Descargado: `{input_path.name}` — convirtiendo...")
+    # ── 4-8. Procesar CADA video (1 creative por archivo) ─────────────────
+    # country/category son a nivel ticket (mismos para todos los videos).
+    industry = (fields.get("customfield_15831") or {}).get("value", "")
+    country = studio.map_country(operator_entity)
+    category = studio.map_category(industry)
+    total = len(video_plans)
+    pending_path = Path(os.getenv("TMP_DIR", "./tmp")) / ".pending_studio.json"
 
-        # ── 5. Convertir (parametros default: 30 Mbps si <=30s, 15 Mbps si mas).
-        # No hay override desde Slack en el "ok" inicial. El unico override
-        # posible es si el .mp4 supera 150 MB: el bot pregunta aparte si
-        # recomprime y aplica el override_bitrate_mbps en ese flujo.
-        output_path = converter.convert(input_path)
-        if not output_path:
-            raise RuntimeError("Error en conversion FFmpeg")
+    def _process_one(vplan: dict, idx: int) -> dict:
+        """Convierte + sube a Studio + adjunta UN video. Devuelve result dict.
+        Cierra sobre el scope de process_ticket (jira, slack, studio, converter,
+        msg, post_thread, ticket_key, ticket_url, summary, country, category).
+        """
+        lbl = f"[{idx}/{total}] " if total > 1 else ""
+        raw_path = vplan["path"]
+        canonical = vplan["canonical"]
+        res = {"canonical": canonical, "studio_url": None, "video_id": None,
+               "creative_id": None, "attached_filename": None,
+               "attach_skip_reason": None, "studio_error": None}
 
-        # Renombrar al nombre canonico del ticket — el .mp4, el upload a
-        # Studio, y el adjunto a Jira van a tener todos el mismo nombre.
-        # Regla: summary sanitizado; si no contiene CTV_CSV, se anyade.
-        canonical_stem = _build_canonical_filename(summary)
-        canonical_path = output_path.parent / f"{canonical_stem}.mp4"
-        if canonical_path != output_path:
-            if canonical_path.exists():
-                canonical_path.unlink()  # ejecucion anterior dejó residuo
-            output_path.rename(canonical_path)
-            log.info(f"Renombrado a nombre canonico: {canonical_path.name}")
-        output_path = canonical_path
+        post_thread(f"{lbl}📥 `{raw_path.name}` — convirtiendo...")
+        out = converter.convert(raw_path)
+        if not out:
+            res["studio_error"] = "conversion FFmpeg fallo"
+            post_thread(f"{lbl}❌ Error de conversion FFmpeg. Salto este video.")
+            return res
 
-        size_mb = output_path.stat().st_size / (1024 * 1024)
-        post_thread(
-            f"🎬 Convertido: `{output_path.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)"
-        )
+        # Renombrar al canonico de este video (con _Vn si hay varios)
+        cpath = out.parent / f"{canonical}.mp4"
+        if cpath != out:
+            if cpath.exists():
+                cpath.unlink()
+            out.rename(cpath)
+        out = cpath
+        size_mb = out.stat().st_size / (1024 * 1024)
+        post_thread(f"{lbl}🎬 Convertido: `{out.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
 
-        # ── 6. Filestage ─── DESACTIVADO ─────────────────────────────────
-        # Sacado del flujo el 26-may-2026: el equipo CTV no usa Filestage
-        # para review (los comentarios del cliente van directo a Jira) y
-        # s3-complete venia fallando con 400 consistentemente. La clase
-        # FilestageUploader sigue en src/uploader.py por si se quiere
-        # reactivar en algun momento.
-        filestage_url = None
-
-        # ── 7. Studio Seedtag (via GraphQL API) ───────────────────────────
-        studio_url = None
+        # Studio
         try:
-            industry = (fields.get("customfield_15831") or {}).get("value", "")
-            country = studio.map_country(operator_entity)
-            category = studio.map_category(industry)
-            result = studio.process_video_to_creative(
-                file_path=output_path,
-                ticket_title=summary,    # name del creative = summary del ticket
-                # video_filename omitido: upload_video sanitiza file_path.name
-                # que ya esta en formato canonico tras el rename del paso 5.
-                country=country,
-                category=category,
+            sres = studio.process_video_to_creative(
+                file_path=out, ticket_title=summary, country=country, category=category,
             )
-            studio_url = result["preview_url"]
-            post_thread(
-                f"🎯 Studio ✓ — <{studio_url}|Preview> · "
-                f"video_id=`{result['video_id']}`"
-            )
+            res["studio_url"] = sres["preview_url"]
+            res["video_id"] = sres["video_id"]
+            res["creative_id"] = sres["creative_id"]
+            post_thread(f"{lbl}🎯 Studio ✓ — <{sres['preview_url']}|Preview> · video_id=`{sres['video_id']}`")
         except StudioVideoNotReadyError as nre:
-            # El vídeo se subió pero el procesado tarda mas de lo esperado.
-            # Avisar en Slack + guardar en pending_studio para segunda pasada:
-            # el loop principal revisara cada 60s y crearia el creative + link
-            # cuando Studio llegue a COMPLETED.
+            res["studio_error"] = f"Studio PROGRESSING tras {nre.elapsed_seconds}s"
             post_thread(
-                f"⚠️ *{ticket_key}* — Studio sigue procesando el vídeo tras "
-                f"{nre.elapsed_seconds}s (último estado: `{nre.last_state}`).\n"
-                f"video_id: `{nre.video_id}`\n"
-                f"El bot lo revisara cada 60s; cuando este COMPLETED, creara el "
-                f"creative y postea el link aqui + en Jira.\n"
-                f"Si quieres adelantarte: el .mp4 convertido va a quedar "
-                f"adjuntado a <{ticket_url}|este ticket>, podes bajarlo desde "
-                f"ahi si necesitas hacer algo manualmente."
+                f"{lbl}⚠️ Studio sigue procesando (video_id=`{nre.video_id}`). "
+                f"El bot lo revisa cada 60s y postea el link cuando complete."
             )
-            _add_pending_studio(
-                Path(os.getenv("TMP_DIR", "./tmp")) / ".pending_studio.json",
-                {
-                    "ticket_key": ticket_key,
-                    "video_id": nre.video_id,
-                    "summary": summary,
-                    "country": country,
-                    "category": category,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            log.info(f"{ticket_key}: anyadido a pending_studio (video_id={nre.video_id})")
+            _add_pending_studio(pending_path, {
+                "ticket_key": ticket_key, "video_id": nre.video_id,
+                "summary": summary, "country": country, "category": category,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
         except StudioJWTExpiredError as jwt_err:
-            log.error(f"Studio JWT expirado: {jwt_err}")
-            # JWT caducado: aviso en hilo (este ticket) Y en canal principal
-            # (es crítico operacionalmente — sin JWT no se procesa NINGUN otro
-            # ticket; merece visibilidad inmediata sin click).
-            post_thread(
-                f"🚨 *Studio — JWT caducado* (HTTP {jwt_err.status_code})\n"
-                f"El .mp4 convertido (`{output_path.name}`) va a quedar adjuntado "
-                f"a <{ticket_url}|este ticket>. Cuando refresques el JWT, bajalo "
-                f"y subelo a Studio manualmente."
-            )
+            res["studio_error"] = f"JWT caducado HTTP {jwt_err.status_code}"
+            post_thread(f"{lbl}🚨 Studio JWT caducado. El .mp4 queda adjunto al ticket.")
             slack.send_message(
                 f"🚨 *Studio — JWT caducado en {ticket_key}* (HTTP {jwt_err.status_code}).\n"
-                f"Extrae un JWT nuevo de design_automations@seedtag.com en "
-                f"DevTools → Application → Cookies → seedtag_jwt, actualiza "
-                f"STUDIO_JWT_COOKIE (o el sidecar `.studio_jwt`) y reinicia el bot."
+                f"Extrae uno nuevo de design_automations@seedtag.com (DevTools → Cookies "
+                f"→ seedtag_jwt), actualiza STUDIO_JWT_COOKIE/.studio_jwt y reinicia el bot."
             )
         except Exception as e:
-            log.error(f"Studio fallo: {e}")
-            post_thread(
-                f"⚠️ *{ticket_key}* — Studio error: `{type(e).__name__}: {e}`.\n"
-                f"El .mp4 convertido (`{output_path.name}`) se adjuntara a "
-                f"<{ticket_url}|este ticket>. Bajalo de ahi y subelo a Studio "
-                f"manualmente."
-            )
+            res["studio_error"] = f"{type(e).__name__}: {e}"
+            post_thread(f"{lbl}⚠️ Studio error: `{type(e).__name__}: {e}`. El .mp4 queda adjunto al ticket.")
 
-        # ── 7. Adjuntar el .mp4 convertido al ticket Jira ─────────────────
-        # NO se borra el adjunto original (regla absoluta). Si pesa mas de
-        # MAX_JIRA_ATTACH_MB, preguntamos al usuario en el hilo si quiere
-        # que el bot recomprima a un bitrate que quepa.
-        attached_ok = False
-        attach_skip_reason = None
+        # Attach a Jira (con recompresion interactiva si >150MB)
+        attach_skip = None
         if size_mb > MAX_JIRA_ATTACH_MB:
-            duration_s = converter.get_duration(input_path)
-            # Bitrate objetivo: que el video + audio sumen <=(MAX-5) MB.
-            # Audio AAC ~256 kbps = 0.256 Mbps. Damos margen extra de 0.3 Mbps.
-            target_mb = MAX_JIRA_ATTACH_MB - 5
-            target_total_mbps = (target_mb * 8) / duration_s
-            target_video_mbps = max(int(target_total_mbps - 0.3), 3)
-            slack_q_ts = slack.send_thread_message(msg["ts"],
-                f"⚠️ *{ticket_key}*: el .mp4 pesa *{size_mb:.1f} MB* (>{MAX_JIRA_ATTACH_MB} MB para Jira).\n"
-                f"Puedo recomprimir a *~{target_video_mbps} Mbps* (esperado ~{target_mb} MB).\n"
-                f"Responde *si* para recomprimir, *no* para saltar el adjunto. Timeout 10 min."
-            )
-            log.info(f"{ticket_key}: solicitada confirmacion de recompresion ({size_mb:.1f}MB → {target_video_mbps}Mbps)")
-            answer = slack.wait_for_yes_no(msg["ts"], slack_q_ts, timeout=600)
-            if answer == "yes":
-                slack.send_thread_message(msg["ts"],
-                    f"🔄 Recomprimiendo a {target_video_mbps} Mbps...")
-                # Borrar el .mp4 viejo antes de re-convertir
-                output_path.unlink()
-                new_output = converter.convert(input_path, override_bitrate_mbps=target_video_mbps)
-                if new_output:
-                    # Renombrar al canonical
-                    canonical_path = new_output.parent / f"{canonical_stem}.mp4"
-                    if canonical_path != new_output:
-                        if canonical_path.exists():
-                            canonical_path.unlink()
-                        new_output.rename(canonical_path)
-                    output_path = canonical_path
-                    size_mb = output_path.stat().st_size / (1024 * 1024)
-                    slack.send_thread_message(msg["ts"],
-                        f"✅ Re-convertido: {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
-                    log.info(f"{ticket_key}: re-convertido a {size_mb:.1f}MB")
-                else:
-                    attach_skip_reason = "re-conversion fallo"
-                    slack.send_thread_message(msg["ts"],
-                        f"❌ Re-conversion fallo. No adjunto el .mp4.")
-            else:
-                attach_skip_reason = (f"archivo de {size_mb:.1f} MB > {MAX_JIRA_ATTACH_MB} MB; "
-                                      f"usuario {'respondio NO' if answer == 'no' else 'no respondio a tiempo'}")
-                log.info(f"{ticket_key}: skip attach — {attach_skip_reason}")
-
-        # Si el tamaño esta OK (original o tras recompresion), intentar attach
-        if size_mb <= MAX_JIRA_ATTACH_MB and not attach_skip_reason:
             try:
-                jira.attach_file(ticket_key, output_path)
-                attached_ok = True
+                dur = converter.get_duration(raw_path)
+                target_mb = MAX_JIRA_ATTACH_MB - 5
+                target_video_mbps = max(int((target_mb * 8) / dur - 0.3), 3)
+            except Exception:
+                target_video_mbps = 10
+            q_ts = slack.send_thread_message(msg["ts"],
+                f"{lbl}⚠️ `{out.name}` pesa *{size_mb:.1f} MB* (>{MAX_JIRA_ATTACH_MB} MB para Jira).\n"
+                f"Recomprimo a *~{target_video_mbps} Mbps*? Responde *si*/*no* (10 min).")
+            answer = slack.wait_for_yes_no(msg["ts"], q_ts, timeout=600)
+            if answer == "yes":
+                out.unlink()
+                re_out = converter.convert(raw_path, override_bitrate_mbps=target_video_mbps)
+                if re_out:
+                    cp = re_out.parent / f"{canonical}.mp4"
+                    if cp != re_out:
+                        if cp.exists():
+                            cp.unlink()
+                        re_out.rename(cp)
+                    out = cp
+                    size_mb = out.stat().st_size / (1024 * 1024)
+                    post_thread(f"{lbl}✅ Re-convertido: {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
+                else:
+                    attach_skip = "re-conversion fallo"
+            else:
+                attach_skip = (f"{size_mb:.1f} MB > {MAX_JIRA_ATTACH_MB} MB; "
+                               f"usuario {'dijo no' if answer == 'no' else 'no respondio'}")
+
+        if size_mb <= MAX_JIRA_ATTACH_MB and not attach_skip:
+            try:
+                jira.attach_file(ticket_key, out)
+                res["attached_filename"] = out.name
             except Exception as att_err:
-                # Errores tipicos: nombre duplicado en el ticket, 413 size del
-                # servidor, 401/403 auth. Loguea el body completo en Slack.
                 import requests as _rq
                 if isinstance(att_err, _rq.HTTPError) and att_err.response is not None:
-                    body = att_err.response.text[:300]
-                    attach_skip_reason = f"HTTP {att_err.response.status_code} — {body}"
+                    attach_skip = f"HTTP {att_err.response.status_code} — {att_err.response.text[:200]}"
                 else:
-                    attach_skip_reason = f"{type(att_err).__name__}: {att_err}"
-                post_thread(
-                    f"⚠️ *{ticket_key}*: error al adjuntar el .mp4 a Jira.\n"
-                    f"`{attach_skip_reason}`\n"
-                    f"Causas comunes: nombre duplicado en el ticket o limite del servidor. "
-                    f"Subelo manualmente si lo necesitas."
-                )
-                log.warning(f"{ticket_key}: attach fallo — {attach_skip_reason}")
+                    attach_skip = f"{type(att_err).__name__}: {att_err}"
+                post_thread(f"{lbl}⚠️ Error al adjuntar `{out.name}`: `{attach_skip}`")
+        res["attach_skip_reason"] = attach_skip
+        return res
 
-        # ── 8. Comentar en Jira (ADF con links clickables) ────────────────
-        jira.add_comment_adf(ticket_key, _build_done_comment(
-            studio_url=studio_url,
-            filestage_url=filestage_url,
-            attached_filename=output_path.name if attached_ok else None,
-            attach_skip_reason=attach_skip_reason,
-        ))
+    try:
+        results = [_process_one(vp, i) for i, vp in enumerate(video_plans, start=1)]
 
-        # ── 9. Resumen en Slack ───────────────────────────────────────────
+        # ── Comentario agregado en Jira (todos los creatives) ──
+        jira.add_comment_adf(ticket_key, _build_done_comment_multi(results, total))
+
+        # ── Resumen en Slack ──
+        ok_count = sum(1 for r in results if r.get("studio_url"))
         post_thread(
-            f"✅ *{ticket_key}* listo para revision:\n"
-            f"• Archivo: `{output_path.name}`\n"
-            f"• {size_mb:.1f} MB | {converter.last_bitrate} Mbps\n"
-            f"• Studio: {'✓' if studio_url else '⚠️ subir manualmente'}\n"
-            f"• <{ticket_url}|Ver en Jira> — marca como Done cuando lo revises"
+            f"✅ *{ticket_key}* procesado: {ok_count}/{total} creative(s) listos en Studio.\n"
+            f"<{ticket_url}|Ver en Jira> — marca como Done cuando lo revises."
         )
-        log.info(f"✅ {ticket_key} procesado — pendiente revision del equipo")
+        log.info(f"✅ {ticket_key} procesado — {ok_count}/{total} creatives en Studio")
 
-        # ── 10. Transicion final: → Building ──────────────────────────────
-        # El nombre de la transicion depende del estado actual:
-        #   Triage   → Building  via 'Send to Building'
-        #   To Build → Building  via 'Start Building'
-        # AMBAS requieren que el ticket tenga customfield_15826 (Seedtag Specs)
-        # rellenado. El field NO esta en el screen de la transicion, asi que
-        # hay que setearlo con PUT al issue ANTES de transicionar (descubierto
-        # via burn-in 26-may: el body de POST /transitions con el field daba
-        # 'cannot be set, not on appropriate screen').
+        # ── Transicion final → Building (una vez por ticket) ──────────────
+        # AMBAS transiciones (Start Building / Send to Building) requieren que
+        # el ticket tenga customfield_15826 (Seedtag Specs) rellenado. El field
+        # NO esta en el screen de la transicion, hay que setearlo con PUT antes.
         try:
             jira.set_fields(ticket_key, {"customfield_15826": {"id": "27743"}})
             transitions = jira.get_transitions(ticket_key)
@@ -865,7 +845,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         except Exception as e:
             log.warning(f"No se pudo cambiar estado a Building: {e}")
 
-        # ── 11. Cleanup: borrar .mp4 (raw + convertido). Conservar .studio_video_id.
+        # ── Cleanup: borrar .mp4 (raw + convertidos). Conservar sidecars. ──
         _cleanup_ticket_files(tmp_dir)
 
     except Exception as e:

@@ -279,12 +279,49 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 - ✅ ffmpeg 8.1.1, venv con todas las deps, sintaxis e imports limpios.
 - ✅ Repo inicializado con commit `0d017ff`.
 
-## Cómo arrancar
+## Cómo arrancar (manual)
 ```bash
 cd csv-automation
 source venv/bin/activate
 python3 src/main.py
 ```
+
+## Cómo arrancar con launchd (modo burn-in 24/7 en macOS)
+El plist está en `deploy/launchd/com.seedtag.csv-automation.plist`.
+
+```bash
+# Instalar: copiar al directorio de LaunchAgents y cargar
+cp deploy/launchd/com.seedtag.csv-automation.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
+
+# Estado
+launchctl list | grep csv-automation
+# Output: PID Status com.seedtag.csv-automation
+# Si PID es "-", el proceso no está corriendo (ver logs/launchd-stderr.log).
+
+# Logs del proceso supervisado (lo que escribe el bot)
+tail -f logs/automation.log
+
+# Logs de launchd (stdout/stderr del proceso, útiles cuando crashea)
+tail -f logs/launchd-stderr.log
+
+# Parar / desinstalar
+launchctl unload ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
+# (Para desinstalar definitivamente: rm también el archivo de ~/Library/LaunchAgents/)
+
+# Recargar tras cambios en el plist
+launchctl unload ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
+cp deploy/launchd/com.seedtag.csv-automation.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
+```
+
+**Características del plist:**
+- `RunAtLoad: true` → arranca al hacer login en la Mac.
+- `KeepAlive { Crashed: true, SuccessfulExit: false }` → auto-restart si crashea, no si sale limpio.
+- `ThrottleInterval: 30` → no relanza más rápido que cada 30s (protege contra crash-loops).
+- `ProcessType: Background` → menos prioridad de CPU, no bloquea la UI.
+
+**Rutas hardcodeadas:** el plist tiene `/Users/sebastianpacheco/csv-automation/...`. Si lo usa otro Mac, sustituir esa ruta en el plist antes de copiarlo.
 
 ## Cómo detener
 ```bash

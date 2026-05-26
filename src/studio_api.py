@@ -467,11 +467,13 @@ class StudioAPIClient:
 
         country y category deben venir mapeados con map_country/map_category.
         """
-        # 1. Upload — filename del video en Studio. Por defecto usa el
-        # ticket_title (convencion _SDS_XXXXX_TIPO_<titulo>). El caller
-        # puede pasar `video_filename` explicito si quiere un sufijo
-        # distinto (ej. "_CSV" para tickets CSV-CTV).
-        upload_filename = video_filename or ticket_title
+        # 1. Upload — filename del video en Studio. Si el caller pasa
+        # `video_filename` explicito, ese gana. Si no, usamos el basename
+        # del archivo en disco (que ya viene canonico tras el rename en
+        # main.py, con el sufijo _CTV_CSV correcto). Antes usabamos
+        # `ticket_title` aqui, pero eso ignoraba el rename canonico y
+        # tiraba a Studio el summary sin _CTV_CSV.
+        upload_filename = video_filename or file_path.name
         video = self.upload_video(file_path, filename=upload_filename)
         video_id = video["id"]
 

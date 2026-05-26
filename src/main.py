@@ -495,8 +495,12 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
 
     # ── 0. QR check: si el ticket trae un link en el field "Advertiser's
-    # website for QR" de la form, el bot NO procesa y solo avisa. El equipo
-    # tiene que generar el QR e incluirlo manualmente.
+    # website for QR" de la form, el bot NO procesa el video. Solo:
+    #   1. Transiciona Triage → To Build via 'Send to Operations' (para que
+    #      el ticket no se quede en Triage y el equipo lo vea en columna
+    #      correcta).
+    #   2. Postea aviso en Slack para que un humano genere el QR + creative.
+    # NO descarga, NO convierte, NO sube a Studio, NO adjunta, NO comenta.
     # Nota: el field NO es un customfield de Jira; vive dentro de Atlassian
     # Forms y solo se accede via forms.cloud (ver JiraClient.get_form_answers).
     try:
@@ -505,18 +509,33 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         log.warning(f"{ticket_key}: error leyendo forms: {e}")
         form_answers = {}
     qr_url = ""
+    qr_label = ""
     for label, value in form_answers.items():
         if "advertiser" in label.lower() and "qr" in label.lower():
             qr_url = value.strip()
+            qr_label = label
             break
     if qr_url:
+        # Transicionar Triage -> To Build
+        try:
+            transitions = jira.get_transitions(ticket_key)
+            if "Send to Operations" in transitions:
+                jira.transition(ticket_key, transitions["Send to Operations"])
+                log.info(f"{ticket_key} (QR) → To Build")
+            else:
+                log.warning(f"{ticket_key} (QR): sin 'Send to Operations'. "
+                            f"Disponibles: {list(transitions.keys())}")
+        except Exception as e:
+            log.warning(f"{ticket_key} (QR): no se pudo mover a To Build: {e}")
+
         slack.send_message(
-            f"🔲 *{ticket_key}* tiene QR (campo '{label}').\n"
+            f"🔲 *{ticket_key}* tiene QR (campo '{qr_label}').\n"
             f"URL: {qr_url[:200]}\n"
-            f"*El bot NO procesa este ticket* — hay que generar el QR e incluirlo "
-            f"manualmente. <{ticket_url}|Ver en Jira>"
+            f"*El bot NO procesa el video* — hay que generar el QR e incluirlo "
+            f"manualmente. Ticket movido a To Build.\n"
+            f"<{ticket_url}|Ver en Jira>"
         )
-        log.info(f"{ticket_key}: skip por QR ({qr_url[:80]})")
+        log.info(f"{ticket_key}: skip procesado por QR ({qr_url[:80]})")
         return
 
     # ── 1. Pre-confirmacion: descargar + probar duracion + calcular plan ──

@@ -494,21 +494,29 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
 
-    # ── 0. QR check: si el ticket trae un link en "Advertiser's website for QR"
-    # (customfield_13309 "Link or QR"), el bot NO procesa y solo avisa. El
-    # equipo tiene que generar el QR e incluirlo manualmente.
-    qr_value = fields.get("customfield_13309")
-    qr_str = qr_value if isinstance(qr_value, str) else (
-        qr_value.get("value", "") if isinstance(qr_value, dict) else ""
-    )
-    if qr_str and qr_str.strip():
+    # ── 0. QR check: si el ticket trae un link en el field "Advertiser's
+    # website for QR" de la form, el bot NO procesa y solo avisa. El equipo
+    # tiene que generar el QR e incluirlo manualmente.
+    # Nota: el field NO es un customfield de Jira; vive dentro de Atlassian
+    # Forms y solo se accede via forms.cloud (ver JiraClient.get_form_answers).
+    try:
+        form_answers = jira.get_form_answers(ticket_key)
+    except Exception as e:
+        log.warning(f"{ticket_key}: error leyendo forms: {e}")
+        form_answers = {}
+    qr_url = ""
+    for label, value in form_answers.items():
+        if "advertiser" in label.lower() and "qr" in label.lower():
+            qr_url = value.strip()
+            break
+    if qr_url:
         slack.send_message(
-            f"🔲 *{ticket_key}* tiene QR (campo 'Advertiser's website for QR').\n"
-            f"URL: {qr_str.strip()[:200]}\n"
+            f"🔲 *{ticket_key}* tiene QR (campo '{label}').\n"
+            f"URL: {qr_url[:200]}\n"
             f"*El bot NO procesa este ticket* — hay que generar el QR e incluirlo "
             f"manualmente. <{ticket_url}|Ver en Jira>"
         )
-        log.info(f"{ticket_key}: skip por QR ({qr_str[:80]})")
+        log.info(f"{ticket_key}: skip por QR ({qr_url[:80]})")
         return
 
     # ── 1. Pre-confirmacion: descargar + probar duracion + calcular plan ──
@@ -572,14 +580,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         slack.send_message(f"❌ *{ticket_key}* cancelado por el usuario.")
         return
 
-    bitrate_override = response.get("bitrate_override")
-    if bitrate_override:
-        slack.send_message(
-            f"✅ Confirmado con bitrate forzado *{bitrate_override} Mbps*. "
-            f"Procesando *{ticket_key}*..."
-        )
-    else:
-        slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
+    slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
 
     # ── 3. Cambiar estado a To Build (Triage → To Build) ──────────────────
     # Workflow real: Triage --[Send to Operations]--> To Build --[Start Building]--> Building
@@ -598,8 +599,11 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     try:
         slack.send_message(f"📥 Descargado: `{input_path.name}` — convirtiendo...")
 
-        # ── 5. Convertir (override opcional de bitrate) ───────────────────
-        output_path = converter.convert(input_path, override_bitrate_mbps=bitrate_override)
+        # ── 5. Convertir (parametros default: 30 Mbps si <=30s, 15 Mbps si mas).
+        # No hay override desde Slack en el "ok" inicial. El unico override
+        # posible es si el .mp4 supera 150 MB: el bot pregunta aparte si
+        # recomprime y aplica el override_bitrate_mbps en ese flujo.
+        output_path = converter.convert(input_path)
         if not output_path:
             raise RuntimeError("Error en conversion FFmpeg")
 

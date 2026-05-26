@@ -90,9 +90,9 @@ class SlackClient:
                        "text": {"type": "mrkdwn",
                                 "text": ("Responde en este hilo:\n"
                                          "• `ok` → procesar con el plan\n"
-                                         "• `ok 20mbps` (o `ok 20`) → forzar bitrate\n"
                                          "• `no` → cancelar este ticket\n"
-                                         "Timeout 1 hora.")}})
+                                         "Timeout 1 hora.\n"
+                                         "(Si supera 150 MB, te preguntare si recomprimo.)")}})
 
         r = self.client.chat_postMessage(
             channel=self.channel_id,
@@ -154,22 +154,24 @@ class SlackClient:
     def wait_for_ticket_response(self, channel: str, message_ts: str,
                                   timeout: int = 3600, poll_interval: int = 15
                                   ) -> dict | None:
-        """Versión ampliada de wait_for_confirmation que devuelve la accion
-        elegida por el usuario y un posible override de bitrate.
+        """Espera la respuesta del usuario al mensaje inicial del ticket.
 
-        Devuelve dict:
-          {'action': 'ok',     'bitrate_override': int|None}  # procesar
-          {'action': 'cancel', 'bitrate_override': None}      # cancelar
-          None                                                # timeout
+        Devuelve:
+          {'action': 'ok'}     # procesar
+          {'action': 'cancel'} # cancelar
+          None                 # timeout
 
-        Patrones que reconoce (case-insensitive, en cualquier parte del texto):
+        Patrones que reconoce (case-insensitive):
           'ok' / 'si' / 'sí' / 'yes' / 'dale' / 'adelante' / 'procesar' / 'go'
-            con un numero opcional seguido de 'mbps' o solo (ej. 'ok 20mbps')
-            -> action='ok', bitrate_override=20
+            -> action='ok'
           'no' / 'cancel' / 'cancelar' / 'salta' / 'saltar' / 'skip'
             -> action='cancel'
+
+        Nota: el bitrate ya NO se acepta como override aqui. El bot SIEMPRE
+        usa los parametros default (30 Mbps <=30s / 15 Mbps >30s). El unico
+        ajuste posible viene mas tarde si el .mp4 supera 150 MB: en ese caso
+        el bot pregunta aparte si recomprime (ver wait_for_yes_no).
         """
-        import re as _re
         if channel != self.channel_id:
             log.warning(f"Intento de leer canal no autorizado: {channel}. Ignorado.")
             return None
@@ -177,7 +179,6 @@ class SlackClient:
         deadline = time.time() + timeout
         CONFIRM_WORDS = {"ok", "si", "sí", "yes", "dale", "adelante", "procesar", "go"}
         CANCEL_WORDS = {"no", "cancel", "cancelar", "salta", "saltar", "skip"}
-        BITRATE_RE = _re.compile(r"\b(\d{1,3})\s*(?:mbps|m)?\b", _re.IGNORECASE)
         log.info(f"Esperando respuesta en hilo del canal #{self.channel}...")
 
         while time.time() < deadline:
@@ -192,18 +193,10 @@ class SlackClient:
                     words = set(text.split())
                     if words & CANCEL_WORDS:
                         log.info(f"Respuesta cancel en hilo: {text!r}")
-                        return {"action": "cancel", "bitrate_override": None}
+                        return {"action": "cancel"}
                     if words & CONFIRM_WORDS:
-                        # Buscar bitrate override en cualquier parte del texto
-                        override = None
-                        for m in BITRATE_RE.finditer(text):
-                            val = int(m.group(1))
-                            # Filtro razonable: bitrate entre 1 y 60 Mbps
-                            if 1 <= val <= 60:
-                                override = val
-                                break
-                        log.info(f"Respuesta ok en hilo: {text!r} (override={override})")
-                        return {"action": "ok", "bitrate_override": override}
+                        log.info(f"Respuesta ok en hilo: {text!r}")
+                        return {"action": "ok"}
 
                 # status callback igual que en wait_for_confirmation
                 if self.status_callback:

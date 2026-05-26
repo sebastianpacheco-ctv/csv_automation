@@ -54,6 +54,10 @@ FIELDS = (
 )
 
 
+JIRA_CLOUD_ID = "f27c696c-ab8c-4c73-896e-079ad4bb1763"
+FORMS_API_BASE = f"https://api.atlassian.com/jira/forms/cloud/{JIRA_CLOUD_ID}"
+
+
 class JiraClient:
     def __init__(self, base_url: str, email: str, api_token: str, project_key: str):
         self.base_url = base_url.rstrip("/")
@@ -295,6 +299,56 @@ class JiraClient:
         r = requests.get(url, auth=self.auth, headers=self.headers)
         r.raise_for_status()
         return {t["name"]: t["id"] for t in r.json().get("transitions", [])}
+
+    def get_form_answers(self, ticket_key: str) -> dict:
+        """Lee las forms de Atlassian Forms adjuntas al ticket y devuelve
+        un dict {question_label: answer_text}. Algunos fields (como
+        'Advertiser's website for QR') no son customfields estandar de
+        Jira, viven dentro de Atlassian Forms y solo se acceden por la API
+        forms.cloud externa.
+
+        Devuelve dict vacio si no hay forms o no se puede leer.
+        """
+        try:
+            r = requests.get(
+                f"{FORMS_API_BASE}/issue/{ticket_key}/form",
+                auth=self.auth, headers=self.headers, timeout=15,
+            )
+            if r.status_code != 200:
+                return {}
+            forms = r.json() or []
+        except Exception as e:
+            log.warning(f"{ticket_key}: no se pudieron listar forms: {e}")
+            return {}
+
+        merged: dict[str, str] = {}
+        for f in forms:
+            form_id = f.get("id")
+            if not form_id:
+                continue
+            try:
+                rr = requests.get(
+                    f"{FORMS_API_BASE}/issue/{ticket_key}/form/{form_id}",
+                    auth=self.auth, headers=self.headers, timeout=15,
+                )
+                if rr.status_code != 200:
+                    continue
+                data = rr.json()
+            except Exception as e:
+                log.warning(f"{ticket_key}: no se pudo leer form {form_id}: {e}")
+                continue
+            questions = (data.get("design") or {}).get("questions") or {}
+            answers = (data.get("state") or {}).get("answers") or {}
+            for qid, q in questions.items():
+                label = q.get("label", "").strip()
+                if not label:
+                    continue
+                ans = answers.get(qid, {})
+                if isinstance(ans, dict):
+                    text = (ans.get("text") or "").strip()
+                    if text:
+                        merged[label] = text
+        return merged
 
     def set_fields(self, ticket_key: str, fields: dict):
         """PUT al issue para setear campos directamente. Usar antes de una

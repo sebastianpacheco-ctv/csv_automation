@@ -48,6 +48,7 @@ FIELDS = (
     "customfield_15867,"  # Formato adicional qty
     "customfield_15831,"  # Industry (→ Studio category)
     "customfield_11300,"  # Deadline
+    "customfield_13309,"  # Link or QR ("Advertiser's website for QR")
     "customfield_10800"   # Request Type (para detectar form 1916)
     # Nota: Creative URLs (links de Drive/WeTransfer) vienen en description
 )

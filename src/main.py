@@ -494,6 +494,23 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
 
+    # ── 0. QR check: si el ticket trae un link en "Advertiser's website for QR"
+    # (customfield_13309 "Link or QR"), el bot NO procesa y solo avisa. El
+    # equipo tiene que generar el QR e incluirlo manualmente.
+    qr_value = fields.get("customfield_13309")
+    qr_str = qr_value if isinstance(qr_value, str) else (
+        qr_value.get("value", "") if isinstance(qr_value, dict) else ""
+    )
+    if qr_str and qr_str.strip():
+        slack.send_message(
+            f"🔲 *{ticket_key}* tiene QR (campo 'Advertiser's website for QR').\n"
+            f"URL: {qr_str.strip()[:200]}\n"
+            f"*El bot NO procesa este ticket* — hay que generar el QR e incluirlo "
+            f"manualmente. <{ticket_url}|Ver en Jira>"
+        )
+        log.info(f"{ticket_key}: skip por QR ({qr_str[:80]})")
+        return
+
     # ── 1. Pre-confirmacion: descargar + probar duracion + calcular plan ──
     # Antes de pedir 'ok' al usuario, descargamos el adjunto y sacamos
     # duracion para poder mostrarle nombre canonico + bitrate + tamanyo
@@ -631,7 +648,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                 f"video_id=`{result['video_id']}`"
             )
         except StudioVideoNotReadyError as nre:
-            # El vídeo se subió pero el procesado tarda más de 90s.
+            # El vídeo se subió pero el procesado tarda mas de lo esperado.
             # Avisar en Slack + guardar en pending_studio para segunda pasada:
             # el loop principal revisara cada 60s y crearia el creative + link
             # cuando Studio llegue a COMPLETED.
@@ -640,7 +657,10 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                 f"{nre.elapsed_seconds}s (último estado: `{nre.last_state}`).\n"
                 f"video_id: `{nre.video_id}`\n"
                 f"El bot lo revisara cada 60s; cuando este COMPLETED, creara el "
-                f"creative y postea el link aqui + en Jira."
+                f"creative y postea el link aqui + en Jira.\n"
+                f"Si quieres adelantarte: el .mp4 convertido va a quedar "
+                f"adjuntado a <{ticket_url}|este ticket>, podes bajarlo desde "
+                f"ahi si necesitas hacer algo manualmente."
             )
             _add_pending_studio(
                 Path(os.getenv("TMP_DIR", "./tmp")) / ".pending_studio.json",
@@ -661,12 +681,17 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                 f"Extrae un JWT nuevo de design_automations@seedtag.com en "
                 f"DevTools → Application → Cookies → seedtag_jwt, actualiza "
                 f"STUDIO_JWT_COOKIE (o el sidecar `.studio_jwt`) y reinicia el bot.\n"
-                f"Mientras tanto sube `{output_path.name}` manualmente al ticket {ticket_key}."
+                f"Mientras tanto, el .mp4 convertido (`{output_path.name}`) va a "
+                f"quedar adjuntado a <{ticket_url}|este ticket>. Cuando refresques "
+                f"el JWT, bajalo del ticket y subelo a Studio manualmente."
             )
         except Exception as e:
             log.error(f"Studio fallo: {e}")
             slack.send_message(
-                f"⚠️ *Studio error* — sube `{output_path.name}` manualmente al ticket {ticket_key}."
+                f"⚠️ *{ticket_key}* — Studio error: `{type(e).__name__}: {e}`.\n"
+                f"El .mp4 convertido (`{output_path.name}`) se adjuntara a "
+                f"<{ticket_url}|este ticket>. Bajalo de ahi y subelo a Studio "
+                f"manualmente."
             )
 
         # ── 7. Adjuntar el .mp4 convertido al ticket Jira ─────────────────

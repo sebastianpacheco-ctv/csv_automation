@@ -189,58 +189,95 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 
 ⛔ **NUNCA incluidos en el cliente:** `removeVideo` ni `removeCreative` — por la regla absoluta de no-borrado.
 
-## Pendientes (en orden de prioridad)
+## Plan operacional (acordado 2026-05-26)
+
+**Fase 1 — Burn-in local (esta semana laboral, ~5 días):**
+- macOS con launchd plist (`com.seedtag.csv-automation.plist`, `RunAtLoad: true`, auto-restart al crashear).
+- Portátil despierto en horario laboral; sleep nocturno y fin de semana aceptados.
+- Procesa los tickets reales que entren en la cola 1597 (CSV-only por diseño).
+- Sidecars de persistencia en `tmp/`: `.studio_jwt`, `.studio_video_id`, `.seen_tickets.json`.
+- Cleanup automático tras procesado exitoso: borra `.mp4` raw + convertido, conserva `.studio_video_id`.
+- Aviso Slack a los 30 días sobre carpetas viejas en `tmp/` (sin borrar nada, regla absoluta).
+- Hardening de `_refresh_cookie()` Filestage: try/except + alerta Slack tras N fallos.
+- `RotatingFileHandler` (10MB × 5 archivos) en `logs/automation.log`.
+
+**Fase 2 — Fix de bugs encontrados durante burn-in.**
+
+**Fase 3 — Migración a GCP:**
+- VM `e2-micro` (us-central1 free tier) en proyecto `decoded-theme-461808-d3`, Ubuntu 22.04.
+- systemd unit + Google Cloud Ops Agent → Logs Explorer + Dashboards.
+- Secretos vía Secret Manager o `.env` chmod 600 en la VM.
+- **GCS bucket reemplaza Filestage como primary** (signed URL 90 días en el comentario de Jira). Filestage queda como toggle backup configurable.
+- Adiós a Playwright en producción.
+
+## Pendientes
 
 ### 1. ✅ Migrar `jira_client.py` (cerrado 2026-05-22)
 - `GET /rest/api/3/search` reemplazado por `POST /rest/api/3/search/jql` (enriquecimiento batched: 1 sola llamada para N tickets, ya no N+1).
 - Apuntando a cola **1597** vía Service Desk + JQL `issuekey in (...)`.
-- Añadidos `get_transitions()` y `transition()` que faltaban en `JiraClient` (los llamaba `main.py` y no existían — `AttributeError` garantizado al primer ticket confirmado).
-- `FIELDS` alineado con lo que `main.py` realmente lee: añadidos `15867` (Formato adicional qty) y `15831` (Industry); quitados `14196`/`14197` (no se leían). Antes el qty venía siempre 0 y la category de Studio quedaba vacía silenciosamente.
+- Añadidos `get_transitions()` y `transition()` que faltaban en `JiraClient`.
+- `FIELDS` alineado con lo que `main.py` realmente lee: añadidos `15867` (Formato adicional qty) y `15831` (Industry); quitados `14196`/`14197` (no se leían).
 
-### 2. Verificar end-to-end con el nuevo wiring de Studio — ÚNICO BLOQUEANTE
+### 2. Verificar end-to-end con el nuevo wiring de Studio — BLOQUEANTE FASE 1
 - `main.py` ya está enchufado a `StudioAPIClient` y maneja `StudioVideoNotReadyError` + `StudioJWTExpiredError`.
-- Falta probar el flujo completo con un ticket real (SDS-21631 es candidato — ya tiene el video raw y convertido en `tmp/SDS-21631/`).
+- Falta probar el flujo completo con un ticket real cuando aparezca.
 - Confirmar que el pipeline CTV produce formatos 1080p (lo intentamos 22 mayo pero el vídeo nunca llegó a COMPLETED).
-- **Prerequisito:** extraer un `STUDIO_JWT_COOKIE` fresco (DevTools → Application → Cookies → `seedtag_jwt` en studio.seedtag.com con el bot `design_automations@seedtag.com` logueado).
+- **Prerequisitos antes de arrancar el burn-in:**
+  1. Extraer `STUDIO_JWT_COOKIE` fresco (ver pre-flight más abajo).
+  2. Renovar `FILESTAGE_SESSION_COOKIE` (caducada el 2026-05-22, HTTP 401).
 
 ### 3. ✅ Persistencia del JWT del bot (cerrado 2026-05-22)
 - Layer 1 — cookie jar en memoria: `requests.Session()` en `StudioAPIClient`.
-- Layer 2 — sidecar `.studio_jwt` (gitignored): lee al arrancar, escribe tras cada call si cambió, chmod 600. Cableado en `main.py` y `test_real_ticket.py` vía `sidecar_path=Path(TMP_DIR)/".studio_jwt"`.
-- Layer 3 — heartbeat 24h: `studio.heartbeat()` en el loop de `main.py`, dispara en arranque (fail-fast de auth) y cada 24h.
-- Layer 4 — `StudioJWTExpiredError` (HTTP 401/403) capturado en `process_ticket` y en el heartbeat, postea a `#csv-tickets` con instrucciones de refresh.
+- Layer 2 — sidecar `.studio_jwt` (gitignored, chmod 600). Cableado en `main.py` y `test_real_ticket.py`.
+- Layer 3 — heartbeat 24h: `studio.heartbeat()` en el loop, dispara en arranque (fail-fast) y cada 24h.
+- Layer 4 — `StudioJWTExpiredError` (HTTP 401/403) capturado en `process_ticket` y heartbeat, postea a `#csv-tickets`.
 
-### 4. Renovación de la cookie de Filestage
-- Actualmente el `_refresh_cookie()` usa Playwright con el login del bot. Funcional pero frágil.
-- Investigar si Filestage tiene OAuth o API key con scope suficiente.
+### 4. Filestage — durante Fase 1 endurecer, en Fase 3 reemplazar
+- **Fase 1 (local):** hardening de `_refresh_cookie()` con try/except + contador de fallos + alerta Slack tras N intentos. Playwright sigue siendo la base.
+- **Fase 3 (GCP):** GCS bucket reemplaza Filestage como primary. Comentario de Jira lleva signed URL GCS. Filestage queda como toggle backup (`STORAGE_PRIMARY=gcs|filestage`) — el equipo CTV no usa Filestage para review, los comentarios del cliente van a Jira.
 
-### 5. Despliegue a GCP
-- Compute Engine + systemd para 24/7
-- No tiene sentido hasta que #2 esté verde.
+### 5. Despliegue a GCP (Fase 3)
+- Proyecto `decoded-theme-461808-d3` en GCP.
+- Compute Engine `e2-micro` (us-central1, free tier) + systemd unit.
+- Google Cloud Ops Agent para Logs Explorer + Monitoring Dashboards + Error Reporting + Alerting.
+- GCS bucket para vídeos procesados (signed URL 90 días).
+- Service account para auth GCS (cero cookies/JWTs humanos).
+- Bloqueado hasta que Fase 1 esté verde.
 
 ### Mejoras futuras (no bloqueantes)
-- Comando `status` en Slack — requiere threading (loop Jira + listener Slack)
-- Soporte para Standard Display (JPG/PNG vía Pillow)
-- Manejo de Smart Links de Drive (Jira los convierte y no son accesibles vía API)
-- Limpieza automática de `tmp/` tras procesado exitoso
+- Comando `status` en Slack — requiere threading.
+- Soporte para Standard Display (JPG/PNG vía Pillow).
+- Manejo de Smart Links de Drive.
 - Service Desk queue endpoint hardcodea `limit=50` y no pagina. OK con volumen actual; flag si la cola crece.
 
-## Pre-flight para correr `test_real_ticket.py` (Lunes 2026-05-25)
-1. **Extraer JWT fresco del bot:**
+## Pre-flight para correr `test_real_ticket.py`
+1. **Extraer JWT fresco del bot Studio:**
    - Loguearse en `https://studio.seedtag.com` como `design_automations@seedtag.com`.
    - DevTools → Application → Cookies → `https://studio.seedtag.com` → copiar el valor de `seedtag_jwt`.
-2. **Setear en shell** (o actualizar `.env`):
+2. **Renovar cookie Filestage** (verificada caducada el 2026-05-22, HTTP 401):
+   - Loguearse en `https://app.filestage.io`.
+   - DevTools → Application → Cookies → copiar el valor de `registeredSessionId` a `FILESTAGE_SESSION_COOKIE` en `.env`.
+   - (No bloquea `test_real_ticket.py` porque ese script no toca Filestage, pero sí bloquea `main.py` cuando se procese el primer ticket.)
+3. **Setear el JWT Studio en shell** (o actualizar `.env`):
    ```bash
    export STUDIO_JWT_COOKIE='eyJ...'
    ```
-3. **Verificar que `tmp/SDS-21631/` no tiene `.studio_video_id`** (si lo tiene, el upload se salta y se reintenta sólo la espera + creative). Los `.mp4` raw y convertido ya están desde la prueba del 22 mayo, así que el script saltará la descarga y la conversión.
-4. **Arrancar el test en foreground** (NO background — perdemos stdout):
+4. **Verificar que `tmp/SDS-21631/` no tiene `.studio_video_id`** (si lo tiene, el upload se salta y se reintenta sólo la espera + creative). Los `.mp4` raw y convertido ya están desde la prueba del 22 mayo, así que el script saltará la descarga y la conversión.
+5. **Arrancar el test en foreground** (NO background — perdemos stdout):
    ```bash
    cd /Users/sebastianpacheco/csv-automation
    source venv/bin/activate
    python3 src/test_real_ticket.py
    ```
-5. **Esperado:** el script intenta subir, espera 60s + 30s. Es esperable que lance `StudioVideoNotReadyError` (el pipeline CTV tarda 15-20+ min). El `video_id` queda persistido en `tmp/SDS-21631/.studio_video_id`. Re-ejecutar más tarde salta el upload y sólo hace la espera + creative.
-6. **NUNCA borrar nada de Studio ni de Jira** durante o después del test, ni siquiera artefactos que el bot haya creado.
+6. **Esperado:** el script intenta subir, espera 60s + 30s. Es esperable que lance `StudioVideoNotReadyError` (el pipeline CTV tarda 15-20+ min). El `video_id` queda persistido en `tmp/SDS-21631/.studio_video_id`. Re-ejecutar más tarde salta el upload y sólo hace la espera + creative.
+7. **NUNCA borrar nada de Studio ni de Jira** durante o después del test, ni siquiera artefactos que el bot haya creado.
+
+## Estado verificado el 2026-05-22 (smoke pre-lunes)
+- ✅ Jira polling live: cola 1597 → 1 ticket (SDS-21631), batched JQL OK, customfields `15831`/`15865`/`14324` poblados.
+- ❌ Filestage cookie: HTTP 401 — renovar (paso 2 del pre-flight).
+- ⏸ Studio: pendiente de JWT fresco. La validación se hace cuando arranque el test.
+- ✅ ffmpeg 8.1.1, venv con todas las deps, sintaxis e imports limpios.
+- ✅ Repo inicializado con commit `0d017ff`.
 
 ## Cómo arrancar
 ```bash

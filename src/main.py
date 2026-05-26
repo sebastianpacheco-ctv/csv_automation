@@ -608,10 +608,15 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     )
     log.info(f"Slack notificado — ts: {msg['ts']}")
 
+    # Helper: agrupa todos los mensajes de progreso de este ticket en el hilo
+    # de la notificacion inicial, manteniendo el canal principal limpio.
+    def post_thread(text: str) -> None:
+        slack.send_thread_message(msg["ts"], text)
+
     # ── 2. Esperar respuesta en el hilo (ok / ok Nmbps / no) ──────────────
     response = slack.wait_for_ticket_response(msg["channel"], msg["ts"], timeout=3600)
     if response is None:
-        slack.send_message(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
+        post_thread(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
         return
     if response.get("action") == "cancel":
         # Marcar como cancelado para permitir reactivacion explicita despues
@@ -619,14 +624,14 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         canceled = _load_canceled(canceled_path)
         canceled.add(ticket_key)
         _save_canceled(canceled_path, canceled)
-        slack.send_message(
+        post_thread(
             f"❌ *{ticket_key}* cancelado por el usuario.\n"
             f"Si fue por error, escribi `reactivar {ticket_key}` en el canal y "
             f"el bot lo retomara en el siguiente poll."
         )
         return
 
-    slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
+    post_thread(f"✅ Confirmado. Procesando *{ticket_key}*...")
 
     # ── 3. Cambiar estado a To Build (Triage → To Build) ──────────────────
     # Workflow real: Triage --[Send to Operations]--> To Build --[Start Building]--> Building
@@ -643,7 +648,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
     # ── 4-8. Proceso ──────────────────────────────────────────────────────
     try:
-        slack.send_message(f"📥 Descargado: `{input_path.name}` — convirtiendo...")
+        post_thread(f"📥 Descargado: `{input_path.name}` — convirtiendo...")
 
         # ── 5. Convertir (parametros default: 30 Mbps si <=30s, 15 Mbps si mas).
         # No hay override desde Slack en el "ok" inicial. El unico override
@@ -666,7 +671,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         output_path = canonical_path
 
         size_mb = output_path.stat().st_size / (1024 * 1024)
-        slack.send_message(
+        post_thread(
             f"🎬 Convertido: `{output_path.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)"
         )
 
@@ -693,7 +698,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                 category=category,
             )
             studio_url = result["preview_url"]
-            slack.send_message(
+            post_thread(
                 f"🎯 Studio ✓ — <{studio_url}|Preview> · "
                 f"video_id=`{result['video_id']}`"
             )
@@ -702,7 +707,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             # Avisar en Slack + guardar en pending_studio para segunda pasada:
             # el loop principal revisara cada 60s y crearia el creative + link
             # cuando Studio llegue a COMPLETED.
-            slack.send_message(
+            post_thread(
                 f"⚠️ *{ticket_key}* — Studio sigue procesando el vídeo tras "
                 f"{nre.elapsed_seconds}s (último estado: `{nre.last_state}`).\n"
                 f"video_id: `{nre.video_id}`\n"
@@ -726,18 +731,24 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             log.info(f"{ticket_key}: anyadido a pending_studio (video_id={nre.video_id})")
         except StudioJWTExpiredError as jwt_err:
             log.error(f"Studio JWT expirado: {jwt_err}")
-            slack.send_message(
+            # JWT caducado: aviso en hilo (este ticket) Y en canal principal
+            # (es crítico operacionalmente — sin JWT no se procesa NINGUN otro
+            # ticket; merece visibilidad inmediata sin click).
+            post_thread(
                 f"🚨 *Studio — JWT caducado* (HTTP {jwt_err.status_code})\n"
+                f"El .mp4 convertido (`{output_path.name}`) va a quedar adjuntado "
+                f"a <{ticket_url}|este ticket>. Cuando refresques el JWT, bajalo "
+                f"y subelo a Studio manualmente."
+            )
+            slack.send_message(
+                f"🚨 *Studio — JWT caducado en {ticket_key}* (HTTP {jwt_err.status_code}).\n"
                 f"Extrae un JWT nuevo de design_automations@seedtag.com en "
                 f"DevTools → Application → Cookies → seedtag_jwt, actualiza "
-                f"STUDIO_JWT_COOKIE (o el sidecar `.studio_jwt`) y reinicia el bot.\n"
-                f"Mientras tanto, el .mp4 convertido (`{output_path.name}`) va a "
-                f"quedar adjuntado a <{ticket_url}|este ticket>. Cuando refresques "
-                f"el JWT, bajalo del ticket y subelo a Studio manualmente."
+                f"STUDIO_JWT_COOKIE (o el sidecar `.studio_jwt`) y reinicia el bot."
             )
         except Exception as e:
             log.error(f"Studio fallo: {e}")
-            slack.send_message(
+            post_thread(
                 f"⚠️ *{ticket_key}* — Studio error: `{type(e).__name__}: {e}`.\n"
                 f"El .mp4 convertido (`{output_path.name}`) se adjuntara a "
                 f"<{ticket_url}|este ticket>. Bajalo de ahi y subelo a Studio "
@@ -805,7 +816,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                     attach_skip_reason = f"HTTP {att_err.response.status_code} — {body}"
                 else:
                     attach_skip_reason = f"{type(att_err).__name__}: {att_err}"
-                slack.send_message(
+                post_thread(
                     f"⚠️ *{ticket_key}*: error al adjuntar el .mp4 a Jira.\n"
                     f"`{attach_skip_reason}`\n"
                     f"Causas comunes: nombre duplicado en el ticket o limite del servidor. "
@@ -822,7 +833,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         ))
 
         # ── 9. Resumen en Slack ───────────────────────────────────────────
-        slack.send_message(
+        post_thread(
             f"✅ *{ticket_key}* listo para revision:\n"
             f"• Archivo: `{output_path.name}`\n"
             f"• {size_mb:.1f} MB | {converter.last_bitrate} Mbps\n"
@@ -864,11 +875,17 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         # si si lo hizo) y se avisa en Slack + comentario en Jira. Un humano
         # decide que hacer.
         log.error(f"Error procesando {ticket_key}: {e}", exc_info=True)
-        slack.send_message(
+        # Aviso doble: en hilo (contexto del ticket) y en main (visibilidad
+        # critica — fallo total del flujo).
+        post_thread(
             f"❌ *{ticket_key}* fallo durante el proceso.\n"
             f"Error: `{type(e).__name__}: {e}`\n"
             f"El ticket queda en su estado actual — el bot no revierte. "
             f"Un humano debe revisar."
+        )
+        slack.send_message(
+            f"❌ *{ticket_key}* fallo durante el proceso. "
+            f"Ver detalles en el hilo del ticket."
         )
         try:
             jira.add_comment_adf(ticket_key, {

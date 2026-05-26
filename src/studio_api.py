@@ -452,8 +452,8 @@ class StudioAPIClient:
     def process_video_to_creative(self, file_path: Path, ticket_title: str,
                                   video_filename: str = None,
                                   country: str = None, category: str = None,
-                                  initial_wait: int = 60, retry_wait: int = 60,
-                                  max_retries: int = 3) -> dict:
+                                  initial_wait: int = 10, retry_wait: int = 10,
+                                  max_retries: int = 15) -> dict:
         """
         Flujo end-to-end:
           1. Sube el vídeo
@@ -564,9 +564,9 @@ class StudioAPIClient:
         return self._graphql(Q_GET_VIDEO_BY_ID, {"id": video_id})["getVideoById"]
 
     def wait_video_ready(self, video_id: str,
-                         initial_wait: int = 60,
-                         retry_wait: int = 60,
-                         max_retries: int = 3) -> dict:
+                         initial_wait: int = 10,
+                         retry_wait: int = 10,
+                         max_retries: int = 15) -> dict:
         """
         Patrón de espera definido por el usuario:
           1. Sube el vídeo (esto se hace antes de llamar esta función)

@@ -90,7 +90,7 @@ class SlackClient:
                        "text": {"type": "mrkdwn",
                                 "text": ("Responde en este hilo:\n"
                                          "• `ok` → procesar con el plan\n"
-                                         "• `no` → cancelar este ticket\n"
+                                         f"• `no` → cancelar este ticket (luego podes reactivarlo con `reactivar {ticket_key}` en el canal)\n"
                                          "Timeout 1 hora.\n"
                                          "(Si supera 150 MB, te preguntare si recomprimo.)")}})
 

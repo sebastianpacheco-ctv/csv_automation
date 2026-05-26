@@ -80,6 +80,24 @@ def _save_seen_tickets(path: Path, seen: set[str]) -> None:
         log.warning(f"No se pudo escribir {path}: {e}")
 
 
+def _load_canceled(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text()))
+    except Exception as e:
+        log.warning(f"No se pudo leer {path}: {e}")
+        return set()
+
+
+def _save_canceled(path: Path, items: set[str]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(items)))
+    except Exception as e:
+        log.warning(f"No se pudo escribir {path}: {e}")
+
+
 def _load_pending_studio(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -596,7 +614,16 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         slack.send_message(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
         return
     if response.get("action") == "cancel":
-        slack.send_message(f"❌ *{ticket_key}* cancelado por el usuario.")
+        # Marcar como cancelado para permitir reactivacion explicita despues
+        canceled_path = Path(os.getenv("TMP_DIR", "./tmp")) / ".canceled_tickets.json"
+        canceled = _load_canceled(canceled_path)
+        canceled.add(ticket_key)
+        _save_canceled(canceled_path, canceled)
+        slack.send_message(
+            f"❌ *{ticket_key}* cancelado por el usuario.\n"
+            f"Si fue por error, escribi `reactivar {ticket_key}` en el canal y "
+            f"el bot lo retomara en el siguiente poll."
+        )
         return
 
     slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
@@ -940,24 +967,55 @@ def main():
 
             _check_old_tmp_folders(tmp_root, slack, last_tmp_check_path)
 
-            # Detectar comando "status" en el canal
+            # Detectar comandos en el canal: 'status' y 'reactivar SDS-XXX'
             try:
                 history = slack.client.conversations_history(
                     channel=slack.channel_id, limit=10
                 )
                 for msg in history.get("messages", []):
-                    text = msg.get("text", "").strip().lower()
+                    text = msg.get("text", "").strip()
+                    text_lower = text.lower()
                     ts = msg.get("ts", "")
-                    if text == "status" and not msg.get("bot_id") and ts not in seen_status:
+                    if msg.get("bot_id") or ts in seen_status:
+                        continue
+                    # 'status' -> resumen de la cola
+                    if text_lower == "status":
                         seen_status.add(ts)
                         log.info("Comando 'status' recibido")
                         slack.client.chat_postMessage(
                             channel=slack.channel_id,
                             text=get_queue_status(jira),
-                            thread_ts=ts
+                            thread_ts=ts,
                         )
+                        continue
+                    # 'reactivar SDS-XXXXX' -> sacar de seen_tickets si estaba
+                    # cancelado por el usuario (lista canceled_tickets.json).
+                    m = re.match(r"reactivar\s+(SDS-\d+)", text, re.IGNORECASE)
+                    if m:
+                        seen_status.add(ts)
+                        target = m.group(1).upper()
+                        canceled_path = tmp_root / ".canceled_tickets.json"
+                        canceled = _load_canceled(canceled_path)
+                        if target in canceled:
+                            canceled.discard(target)
+                            _save_canceled(canceled_path, canceled)
+                            seen_tickets.discard(target)
+                            _save_seen_tickets(seen_tickets_path, seen_tickets)
+                            slack.client.chat_postMessage(
+                                channel=slack.channel_id, thread_ts=ts,
+                                text=f"🔄 *{target}* reactivado. Lo retomo en el siguiente poll (≤60s).",
+                            )
+                            log.info(f"Comando reactivar: {target} re-habilitado")
+                        else:
+                            slack.client.chat_postMessage(
+                                channel=slack.channel_id, thread_ts=ts,
+                                text=(f"❓ *{target}* no estaba cancelado. Solo se puede "
+                                      f"reactivar tickets que dijiste `no` y estan en la "
+                                      f"lista de cancelados."),
+                            )
+                            log.info(f"Comando reactivar: {target} no estaba en canceled")
             except Exception as e:
-                log.warning(f"Error leyendo canal para status: {e}")
+                log.warning(f"Error leyendo canal para comandos: {e}")
 
             # Polling Jira
             issues = jira.get_omniscreen_video_issues()

@@ -58,7 +58,7 @@ CSV_REQUEST_TYPE_ID = "1916"
 
 # Limite que el equipo CTV se autoimpone para adjuntos en Jira: 150 MB.
 # Por encima de eso, el bot NO intenta adjuntar y avisa en Slack para que
-# el equipo decida (subirlo manualmente, dejarlo solo en Studio/Filestage, etc).
+# el equipo decida (subirlo manualmente al ticket, dejarlo solo en Studio, etc).
 MAX_JIRA_ATTACH_MB = 150
 
 
@@ -163,7 +163,7 @@ def _build_done_comment(studio_url: str | None,
                 {"type": "text", "text": "⚠️ No se pudo adjuntar el .mp4 convertido: "},
                 {"type": "text", "text": attach_skip_reason, "marks": [{"type": "code"}]},
                 {"type": "text", "text": ". Si lo necesitas en el ticket, "
-                                          "descargalo de Filestage/Studio y subelo a mano."},
+                                          "descargalo de Studio y subelo a mano."},
             ],
         })
 
@@ -451,15 +451,13 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             f"🎬 Convertido: `{output_path.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)"
         )
 
-        # ── 6. Filestage ──────────────────────────────────────────────────
+        # ── 6. Filestage ─── DESACTIVADO ─────────────────────────────────
+        # Sacado del flujo el 26-may-2026: el equipo CTV no usa Filestage
+        # para review (los comentarios del cliente van directo a Jira) y
+        # s3-complete venia fallando con 400 consistentemente. La clase
+        # FilestageUploader sigue en src/uploader.py por si se quiere
+        # reactivar en algun momento.
         filestage_url = None
-        try:
-            filestage_url = filestage.upload(output_path, summary, operator_entity)
-            if filestage_url:
-                slack.send_message(f"📋 Filestage ✓")
-        except Exception as fe:
-            log.warning(f"Filestage fallo: {fe}")
-            slack.send_message(f"⚠️ Filestage error — continuo con Studio")
 
         # ── 7. Studio Seedtag (via GraphQL API) ───────────────────────────
         studio_url = None

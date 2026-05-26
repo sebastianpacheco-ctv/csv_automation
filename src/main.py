@@ -67,6 +67,50 @@ def _save_seen_tickets(path: Path, seen: set[str]) -> None:
         log.warning(f"No se pudo escribir {path}: {e}")
 
 
+def _cleanup_ticket_files(ticket_dir: Path) -> None:
+    """Borra .mp4 raw + convertido tras procesar con exito.
+    Conserva .studio_video_id (idempotencia) y cualquier otro fichero no .mp4.
+    """
+    if not ticket_dir.exists():
+        return
+    for f in ticket_dir.glob("*.mp4"):
+        try:
+            size_mb = f.stat().st_size / 1024 / 1024
+            f.unlink()
+            log.info(f"Cleanup: borrado {f.name} ({size_mb:.1f} MB)")
+        except Exception as e:
+            log.warning(f"Cleanup: no se pudo borrar {f}: {e}")
+
+
+def _check_old_tmp_folders(tmp_dir: Path, slack, last_check_path: Path,
+                            age_days: int = 30) -> None:
+    """Escanea tmp/ y avisa en Slack (UNA vez al dia max) si hay carpetas
+    de tickets con mtime > age_days. No borra nada (regla absoluta).
+    """
+    import time as _time
+    if last_check_path.exists():
+        if _time.time() - last_check_path.stat().st_mtime < 24 * 3600:
+            return
+    cutoff = _time.time() - age_days * 24 * 3600
+    old = []
+    if tmp_dir.exists():
+        for sub in tmp_dir.iterdir():
+            if sub.is_dir() and not sub.name.startswith(".") and sub.stat().st_mtime < cutoff:
+                old.append(sub.name)
+    if old:
+        listado = "\n".join(f"• `tmp/{name}/`" for name in sorted(old))
+        slack.send_message(
+            f"🧹 *Carpetas en `tmp/` con mas de {age_days} dias* ({len(old)}):\n"
+            f"{listado}\n"
+            f"Si ya no las necesitas, borralas a mano. El bot nunca borra por su cuenta."
+        )
+    try:
+        last_check_path.parent.mkdir(parents=True, exist_ok=True)
+        last_check_path.touch()
+    except Exception as e:
+        log.warning(f"No se pudo actualizar {last_check_path}: {e}")
+
+
 # ── Deteccion de tickets CSV/COV ──────────────────────────────────────────────
 
 def _extract_text(node) -> str:
@@ -355,6 +399,9 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         )
         log.info(f"✅ {ticket_key} procesado — pendiente revision del equipo")
 
+        # ── 9. Cleanup: borrar .mp4 (raw + convertido). Conservar .studio_video_id.
+        _cleanup_ticket_files(tmp_dir)
+
     except Exception as e:
         log.error(f"Error procesando {ticket_key}: {e}", exc_info=True)
         slack.send_message(f"❌ *{ticket_key}* fallo durante el proceso. Revirtiendo a To Build...")
@@ -407,13 +454,15 @@ def main():
     # Asignar callback de status para responder durante la espera del ok
     slack.status_callback = lambda: get_queue_status(jira)
 
-    seen_tickets_path = Path(os.getenv("TMP_DIR", "./tmp")) / ".seen_tickets.json"
+    tmp_root = Path(os.getenv("TMP_DIR", "./tmp"))
+    seen_tickets_path = tmp_root / ".seen_tickets.json"
     seen_tickets: set[str] = _load_seen_tickets(seen_tickets_path)
     if seen_tickets:
         log.info(f"Cargados {len(seen_tickets)} tickets ya vistos de {seen_tickets_path}")
     seen_status: set[str] = set()
     last_studio_heartbeat: float = 0.0
     HEARTBEAT_INTERVAL = 24 * 3600
+    last_tmp_check_path = tmp_root / ".last_tmp_check"
     log.info(f"Polling Jira cada {POLL_INTERVAL}s...")
 
     while True:
@@ -427,6 +476,8 @@ def main():
                         f"Extrae uno nuevo y actualiza STUDIO_JWT_COOKIE o el sidecar `.studio_jwt`."
                     )
                 last_studio_heartbeat = time.monotonic()
+
+            _check_old_tmp_folders(tmp_root, slack, last_tmp_check_path)
 
             # Detectar comando "status" en el canal
             try:

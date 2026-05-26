@@ -28,9 +28,14 @@ STUDIO_GRAPHQL_URL = "https://studio.seedtag.com/g"
 STUDIO_BASE = "https://studio.seedtag.com"
 
 # Pipeline CTV: produce variantes 1080p (avc1, 29.97fps, etc.). Si se usa el
-# default "legacy" Studio genera variantes open-web ≤960x540 que NO sirven
-# para CTV. Selector name: ctv-base.
-VIDEO_PIPELINE_CTV_BASE = "68d10800680fb2e148f30961"
+# default "legacy" Studio genera variantes open-web <=960x540 que NO sirven
+# para CTV.
+#
+# IMPORTANTE: usar el SELECTOR_NAME ("ctv-base"), NO el ID hex. Aunque la API
+# acepta el ID hex 68d10800680fb2e148f30961, los videos subidos con ese ID
+# quedan PROGRESSING forever (verificado experimentalmente 26-may-2026). Con
+# selector_name el upload procesa en ~30s.
+VIDEO_PIPELINE_CTV_BASE = "ctv-base"
 PREVIEW_BASE = "https://preview.seedtag.com/creative"
 
 

@@ -26,6 +26,11 @@ log = logging.getLogger(__name__)
 
 STUDIO_GRAPHQL_URL = "https://studio.seedtag.com/g"
 STUDIO_BASE = "https://studio.seedtag.com"
+
+# Pipeline CTV: produce variantes 1080p (avc1, 29.97fps, etc.). Si se usa el
+# default "legacy" Studio genera variantes open-web ≤960x540 que NO sirven
+# para CTV. Selector name: ctv-base.
+VIDEO_PIPELINE_CTV_BASE = "68d10800680fb2e148f30961"
 PREVIEW_BASE = "https://preview.seedtag.com/creative"
 
 
@@ -461,8 +466,10 @@ class StudioAPIClient:
 
         country y category deben venir mapeados con map_country/map_category.
         """
-        # 1. Upload
-        video = self.upload_video(file_path)
+        # 1. Upload — filename = ticket_title para que Studio muestre el
+        # video con la convencion del equipo (_SDS_XXXXX_TIPO_<titulo>),
+        # no el filename del .mp4 generado por el converter.
+        video = self.upload_video(file_path, filename=ticket_title)
         video_id = video["id"]
 
         # 2. Wait for processing — propaga StudioVideoNotReadyError si no llega
@@ -495,7 +502,7 @@ class StudioAPIClient:
         }
 
     def upload_video(self, file_path: Path,
-                     video_pipeline_id: str = "legacy",
+                     video_pipeline_id: str = VIDEO_PIPELINE_CTV_BASE,
                      filename: str = None) -> dict:
         """Sube un .mp4 y devuelve {id, name, status, ...}. Devuelve el dict del vídeo.
 

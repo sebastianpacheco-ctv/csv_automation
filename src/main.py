@@ -56,6 +56,11 @@ POLL_INTERVAL = 60  # segundos entre chequeos
 # ID del nuevo formulario dedicado para CSV/COV
 CSV_REQUEST_TYPE_ID = "1916"
 
+# Limite que el equipo CTV se autoimpone para adjuntos en Jira: 150 MB.
+# Por encima de eso, el bot NO intenta adjuntar y avisa en Slack para que
+# el equipo decida (subirlo manualmente, dejarlo solo en Studio/Filestage, etc).
+MAX_JIRA_ATTACH_MB = 150
+
 
 def _load_seen_tickets(path: Path) -> set[str]:
     if not path.exists():
@@ -95,7 +100,8 @@ def _build_canonical_filename(summary: str) -> str:
 
 def _build_done_comment(studio_url: str | None,
                         filestage_url: str | None,
-                        attached_filename: str | None) -> dict:
+                        attached_filename: str | None,
+                        attach_skip_reason: str | None = None) -> dict:
     """Construye el doc ADF para el comentario que el bot deja en Jira tras
     procesar un ticket. Sin specs tecnicas; links clickables; nota de que el
     adjunto original puede borrarse a mano (el bot nunca borra).
@@ -148,6 +154,16 @@ def _build_done_comment(studio_url: str | None,
             "content": [
                 {"type": "text", "text": "Archivo convertido adjuntado a este ticket: "},
                 {"type": "text", "text": attached_filename, "marks": [{"type": "code"}]},
+            ],
+        })
+    elif attach_skip_reason:
+        paragraphs.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "⚠️ No se pudo adjuntar el .mp4 convertido: "},
+                {"type": "text", "text": attach_skip_reason, "marks": [{"type": "code"}]},
+                {"type": "text", "text": ". Si lo necesitas en el ticket, "
+                                          "descargalo de Filestage/Studio y subelo a mano."},
             ],
         })
 
@@ -491,18 +507,47 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         # ── 7. Adjuntar el .mp4 convertido al ticket Jira ─────────────────
         # NO se borra el adjunto original (regla absoluta). El comentario de
         # abajo avisa al equipo de que pueden borrarlo a mano si lo desean.
+        # Pre-check: si pesa mas del limite, no intentamos adjuntar y avisamos.
         attached_ok = False
-        try:
-            jira.attach_file(ticket_key, output_path)
-            attached_ok = True
-        except Exception as att_err:
-            log.warning(f"No se pudo adjuntar convertido a {ticket_key}: {att_err}")
+        attach_skip_reason = None
+        if size_mb > MAX_JIRA_ATTACH_MB:
+            attach_skip_reason = (f"archivo de {size_mb:.1f} MB supera el limite "
+                                  f"de {MAX_JIRA_ATTACH_MB} MB para Jira")
+            slack.send_message(
+                f"⚠️ *{ticket_key}*: no adjunto el .mp4 al ticket — {attach_skip_reason}.\n"
+                f"Si lo necesitas en el ticket, descargalo de Filestage/Studio "
+                f"y subelo manualmente."
+            )
+            log.warning(f"{ticket_key}: skip attach — {attach_skip_reason}")
+        else:
+            try:
+                jira.attach_file(ticket_key, output_path)
+                attached_ok = True
+            except Exception as att_err:
+                # Errores tipicos: nombre duplicado (ya existe un adjunto con
+                # ese nombre en el ticket), 413 (size limit del servidor),
+                # 401/403 (auth). El bot loguea el error completo en Slack
+                # para que el equipo decida si subirlo manual o ignorar.
+                import requests as _rq
+                if isinstance(att_err, _rq.HTTPError) and att_err.response is not None:
+                    body = att_err.response.text[:300]
+                    attach_skip_reason = f"HTTP {att_err.response.status_code} — {body}"
+                else:
+                    attach_skip_reason = f"{type(att_err).__name__}: {att_err}"
+                slack.send_message(
+                    f"⚠️ *{ticket_key}*: error al adjuntar el .mp4 a Jira.\n"
+                    f"`{attach_skip_reason}`\n"
+                    f"Causas comunes: nombre duplicado en el ticket o limite del servidor. "
+                    f"Subelo manualmente si lo necesitas."
+                )
+                log.warning(f"{ticket_key}: attach fallo — {attach_skip_reason}")
 
         # ── 8. Comentar en Jira (ADF con links clickables) ────────────────
         jira.add_comment_adf(ticket_key, _build_done_comment(
             studio_url=studio_url,
             filestage_url=filestage_url,
             attached_filename=output_path.name if attached_ok else None,
+            attach_skip_reason=attach_skip_reason,
         ))
 
         # ── 9. Resumen en Slack ───────────────────────────────────────────

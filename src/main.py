@@ -80,6 +80,129 @@ def _save_seen_tickets(path: Path, seen: set[str]) -> None:
         log.warning(f"No se pudo escribir {path}: {e}")
 
 
+def _load_pending_studio(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text())
+    except Exception as e:
+        log.warning(f"No se pudo leer {path}: {e}")
+        return []
+
+
+def _save_pending_studio(path: Path, items: list[dict]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(items, indent=2))
+    except Exception as e:
+        log.warning(f"No se pudo escribir {path}: {e}")
+
+
+def _add_pending_studio(path: Path, entry: dict) -> None:
+    """Anyade (o reemplaza por ticket_key) una entrada pendiente."""
+    items = _load_pending_studio(path)
+    items = [i for i in items if i.get("ticket_key") != entry["ticket_key"]]
+    items.append(entry)
+    _save_pending_studio(path, items)
+
+
+def _process_pending_studio(studio, jira, slack, pending_path: Path,
+                             max_age_hours: float = 2.0) -> None:
+    """Segunda pasada: para cada entry pendiente, consulta el estado del video
+    en Studio. Si COMPLETED -> crea el creative y postea segundo comentario
+    en Jira con el link. Si ERROR/FAILED o lleva mas de `max_age_hours` ->
+    quita del pending y avisa en Slack.
+    """
+    items = _load_pending_studio(pending_path)
+    if not items:
+        return
+    now = datetime.now(timezone.utc)
+    remaining = []
+    for it in items:
+        try:
+            created = datetime.fromisoformat(it["created_at"])
+            age_h = (now - created).total_seconds() / 3600
+            if age_h > max_age_hours:
+                slack.send_message(
+                    f"⚠️ *{it['ticket_key']}*: Studio sigue PROGRESSING tras "
+                    f"{age_h:.1f}h. Quito del pending. video_id=`{it['video_id']}`. "
+                    f"Crea el creative manualmente cuando Studio termine."
+                )
+                log.warning(f"{it['ticket_key']}: pending Studio expirado tras {age_h:.1f}h")
+                continue
+
+            video = studio.get_video(it["video_id"])
+            state = video.get("state", "?")
+            formats = video.get("formats") or []
+
+            if state in ("ERROR", "FAILED"):
+                slack.send_message(
+                    f"❌ *{it['ticket_key']}*: Studio devolvio state=`{state}` para "
+                    f"video_id=`{it['video_id']}`. Quito del pending."
+                )
+                log.error(f"{it['ticket_key']}: Studio terminó en {state}")
+                continue
+
+            if state != "COMPLETED":
+                remaining.append(it)
+                continue
+
+            # state == COMPLETED -> crear creative
+            log.info(f"{it['ticket_key']}: Studio COMPLETED, creando creative...")
+            ad_template = studio.build_csv_ctv_ad_template(
+                video_id=it["video_id"],
+                name=it["summary"],
+                formats=formats,
+                country=it.get("country"),
+                category=it.get("category"),
+            )
+            creative_id = studio.create_cov_creative(ad_template)
+            preview_url = studio.get_preview_link(creative_id)
+            log.info(f"{it['ticket_key']}: creative tardio creado id={creative_id}")
+
+            # Postear segundo comentario en Jira con el link
+            try:
+                jira.add_comment_adf(it["ticket_key"], {
+                    "type": "doc", "version": 1,
+                    "content": [
+                        {"type": "paragraph", "content": [
+                            {"type": "text",
+                             "text": "🎯 Studio termino el procesado del video. Creative creado."},
+                        ]},
+                        {"type": "paragraph", "content": [
+                            {"type": "text", "text": "Preview Studio: "},
+                            {"type": "text", "text": preview_url,
+                             "marks": [{"type": "link", "attrs": {"href": preview_url}}]},
+                        ]},
+                    ],
+                })
+            except Exception as ce:
+                log.warning(f"{it['ticket_key']}: no se pudo añadir comentario tardio: {ce}")
+
+            slack.send_message(
+                f"🎯 *{it['ticket_key']}*: Studio COMPLETED, creative creado.\n"
+                f"<{preview_url}|Preview> · creative_id=`{creative_id}`"
+            )
+            # No añadir a remaining -> se elimina del pending
+
+        except StudioJWTExpiredError as jwt_err:
+            slack.send_message(
+                f"🚨 *Studio JWT caducado* en chequeo de tickets pending "
+                f"(HTTP {jwt_err.status_code}). Refresca el JWT."
+            )
+            remaining.append(it)  # reintentar cuando vuelva el JWT
+            # No tiene sentido seguir con el resto: todos fallarian igual.
+            remaining.extend(items[items.index(it) + 1:])
+            break
+        except Exception as e:
+            log.warning(f"{it.get('ticket_key', '?')}: error revisando pending Studio: {e}")
+            remaining.append(it)  # reintentar en siguiente iter
+
+    if len(remaining) != len(items):
+        _save_pending_studio(pending_path, remaining)
+        log.info(f"Pending Studio: {len(items)} -> {len(remaining)}")
+
+
 def _build_canonical_filename(summary: str) -> str:
     """Construye el nombre canonico para el .mp4 procesado.
 
@@ -480,13 +603,28 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             )
         except StudioVideoNotReadyError as nre:
             # El vídeo se subió pero el procesado tarda más de 90s.
-            # Avisar en Slack y dejar que un humano cree el creative manualmente.
+            # Avisar en Slack + guardar en pending_studio para segunda pasada:
+            # el loop principal revisara cada 60s y crearia el creative + link
+            # cuando Studio llegue a COMPLETED.
             slack.send_message(
                 f"⚠️ *{ticket_key}* — Studio sigue procesando el vídeo tras "
                 f"{nre.elapsed_seconds}s (último estado: `{nre.last_state}`).\n"
                 f"video_id: `{nre.video_id}`\n"
-                f"Cuando aparezca el ✓ verde en Studio, crea el creative manualmente."
+                f"El bot lo revisara cada 60s; cuando este COMPLETED, creara el "
+                f"creative y postea el link aqui + en Jira."
             )
+            _add_pending_studio(
+                Path(os.getenv("TMP_DIR", "./tmp")) / ".pending_studio.json",
+                {
+                    "ticket_key": ticket_key,
+                    "video_id": nre.video_id,
+                    "summary": summary,
+                    "country": country,
+                    "category": category,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            log.info(f"{ticket_key}: anyadido a pending_studio (video_id={nre.video_id})")
         except StudioJWTExpiredError as jwt_err:
             log.error(f"Studio JWT expirado: {jwt_err}")
             slack.send_message(
@@ -697,6 +835,10 @@ def main():
     last_studio_heartbeat: float = 0.0
     HEARTBEAT_INTERVAL = 24 * 3600
     last_tmp_check_path = tmp_root / ".last_tmp_check"
+    pending_studio_path = tmp_root / ".pending_studio.json"
+    pending_count = len(_load_pending_studio(pending_studio_path))
+    if pending_count:
+        log.info(f"Pending Studio: {pending_count} tickets esperando COMPLETED")
     log.info(f"Polling Jira cada {POLL_INTERVAL}s...")
 
     while True:
@@ -710,6 +852,14 @@ def main():
                         f"Extrae uno nuevo y actualiza STUDIO_JWT_COOKIE o el sidecar `.studio_jwt`."
                     )
                 last_studio_heartbeat = time.monotonic()
+
+            # Segunda pasada: revisar tickets cuyo video en Studio quedo
+            # PROGRESSING al terminar el flujo principal; si llego a COMPLETED,
+            # crear el creative + segundo comentario Jira con el link.
+            try:
+                _process_pending_studio(studio, jira, slack, pending_studio_path)
+            except Exception as e:
+                log.warning(f"Error en _process_pending_studio: {e}")
 
             _check_old_tmp_folders(tmp_root, slack, last_tmp_check_path)
 

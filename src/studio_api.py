@@ -510,12 +510,14 @@ class StudioAPIClient:
         """Sube un .mp4 y devuelve {id, name, status, ...}. Devuelve el dict del vídeo.
 
         Studio valida el `filename` con la regla: mayúsculas, dígitos, guiones
-        y underscores. Si no se pasa `filename`, sanitizamos `file_path.name`.
+        y underscores ("Name must be upper-case only with - or _"). SIEMPRE
+        sanitizamos antes de mandar — daba igual que el caller pasara un
+        filename ya formateado, si tenia minusculas el servidor rechazaba.
         """
         if not file_path.exists():
             raise FileNotFoundError(file_path)
         size_mb = file_path.stat().st_size / 1024 / 1024
-        send_name = filename or self._sanitize_video_filename(file_path.name)
+        send_name = self._sanitize_video_filename(filename or file_path.name)
         log.info(f"Studio API: subiendo {file_path.name} como '{send_name}' "
                  f"({size_mb:.1f} MB) con pipeline='{video_pipeline_id}'")
         variables = {

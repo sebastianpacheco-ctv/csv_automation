@@ -18,6 +18,7 @@ Flujo:
 
 import os
 import re
+import json
 import time
 import logging
 from datetime import datetime, timezone
@@ -46,6 +47,24 @@ POLL_INTERVAL = 60  # segundos entre chequeos
 
 # ID del nuevo formulario dedicado para CSV/COV
 CSV_REQUEST_TYPE_ID = "1916"
+
+
+def _load_seen_tickets(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text()))
+    except Exception as e:
+        log.warning(f"No se pudo leer {path}: {e}; arrancando con set vacio")
+        return set()
+
+
+def _save_seen_tickets(path: Path, seen: set[str]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(seen)))
+    except Exception as e:
+        log.warning(f"No se pudo escribir {path}: {e}")
 
 
 # ── Deteccion de tickets CSV/COV ──────────────────────────────────────────────
@@ -388,7 +407,10 @@ def main():
     # Asignar callback de status para responder durante la espera del ok
     slack.status_callback = lambda: get_queue_status(jira)
 
-    seen_tickets: set[str] = set()
+    seen_tickets_path = Path(os.getenv("TMP_DIR", "./tmp")) / ".seen_tickets.json"
+    seen_tickets: set[str] = _load_seen_tickets(seen_tickets_path)
+    if seen_tickets:
+        log.info(f"Cargados {len(seen_tickets)} tickets ya vistos de {seen_tickets_path}")
     seen_status: set[str] = set()
     last_studio_heartbeat: float = 0.0
     HEARTBEAT_INTERVAL = 24 * 3600
@@ -430,6 +452,7 @@ def main():
             new = [i for i in issues if i["key"] not in seen_tickets and is_csv_ticket(i)]
             for issue in new:
                 seen_tickets.add(issue["key"])
+                _save_seen_tickets(seen_tickets_path, seen_tickets)
                 process_ticket(issue, jira, slack, converter, studio, filestage)
 
         except Exception as e:

@@ -117,7 +117,7 @@ def check_studio():
     expected = "design_automations@seedtag.com"
     if user.get("email") != expected:
         return False, f"identidad incorrecta: {user.get('email')!r} (esperaba {expected!r})"
-    return True, f"bot {user['email']} _id={user['_id']}"
+    return True, f"bot {user['email']}"
 
 
 def check_jira():

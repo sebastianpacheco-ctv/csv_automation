@@ -485,15 +485,20 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         )
         log.info(f"✅ {ticket_key} procesado — pendiente revision del equipo")
 
-        # ── 10. Transicion final: To Build → Building ─────────────────────
-        # El equipo revisa desde Building y decide cuando marcar Done.
+        # ── 10. Transicion final: → Building ──────────────────────────────
+        # El nombre de la transicion depende del estado actual:
+        #   Triage   → Building  via 'Send to Building'
+        #   To Build → Building  via 'Start Building'
+        # Probamos ambos en orden; el primero que exista lo usamos.
         try:
             transitions = jira.get_transitions(ticket_key)
-            if "Send to Building" in transitions:
-                jira.transition(ticket_key, transitions["Send to Building"])
-                log.info(f"{ticket_key} → Building")
+            for tname in ("Start Building", "Send to Building"):
+                if tname in transitions:
+                    jira.transition(ticket_key, transitions[tname])
+                    log.info(f"{ticket_key} → Building (via '{tname}')")
+                    break
             else:
-                log.warning(f"{ticket_key}: sin transicion 'Send to Building'. "
+                log.warning(f"{ticket_key}: sin transicion a Building. "
                             f"Disponibles: {list(transitions.keys())}")
         except Exception as e:
             log.warning(f"No se pudo cambiar estado a Building: {e}")

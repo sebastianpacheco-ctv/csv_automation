@@ -75,6 +75,24 @@ def _save_seen_tickets(path: Path, seen: set[str]) -> None:
         log.warning(f"No se pudo escribir {path}: {e}")
 
 
+def _build_canonical_filename(summary: str) -> str:
+    """Construye el nombre canonico para el .mp4 procesado.
+
+    Reglas (acordadas con el equipo CTV):
+    - Base = summary del ticket, sanitizado (uppercase, [A-Z0-9_-] solo, sin
+      espacios ni acentos, sin doble underscore consecutivo).
+    - Si el summary YA contiene 'CTV_CSV', usar tal cual.
+    - Si NO lo contiene, añadir '_CTV_CSV' al final.
+
+    Este nombre se usa para: el archivo .mp4 convertido, el filename del
+    upload a Studio, el nombre con que se adjunta a Jira. Los tres coinciden.
+    """
+    sanitized = StudioAPIClient._sanitize_video_filename(summary)
+    if "CTV_CSV" in sanitized:
+        return sanitized
+    return f"{sanitized}_CTV_CSV"
+
+
 def _build_done_comment(studio_url: str | None,
                         filestage_url: str | None,
                         attached_filename: str | None) -> dict:
@@ -400,13 +418,24 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         if not output_path:
             raise RuntimeError("Error en conversion FFmpeg")
 
+        # Renombrar al nombre canonico del ticket — el .mp4, el upload a
+        # Studio, y el adjunto a Jira van a tener todos el mismo nombre.
+        # Regla: summary sanitizado; si no contiene CTV_CSV, se anyade.
+        canonical_stem = _build_canonical_filename(summary)
+        canonical_path = output_path.parent / f"{canonical_stem}.mp4"
+        if canonical_path != output_path:
+            if canonical_path.exists():
+                canonical_path.unlink()  # ejecucion anterior dejó residuo
+            output_path.rename(canonical_path)
+            log.info(f"Renombrado a nombre canonico: {canonical_path.name}")
+        output_path = canonical_path
+
         size_mb = output_path.stat().st_size / (1024 * 1024)
         slack.send_message(
             f"🎬 Convertido: `{output_path.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)"
         )
 
         # ── 6. Filestage ──────────────────────────────────────────────────
-        filestage_url = None
         filestage_url = None
         try:
             filestage_url = filestage.upload(output_path, summary, operator_entity)
@@ -424,8 +453,9 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             category = studio.map_category(industry)
             result = studio.process_video_to_creative(
                 file_path=output_path,
-                ticket_title=summary,        # name del creative = summary del ticket
-                video_filename=f"{summary}_CSV",  # nombre del video en Studio (con sufijo _CSV)
+                ticket_title=summary,    # name del creative = summary del ticket
+                # video_filename omitido: upload_video sanitiza file_path.name
+                # que ya esta en formato canonico tras el rename del paso 5.
                 country=country,
                 category=category,
             )

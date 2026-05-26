@@ -78,6 +78,53 @@ class SlackClient:
     def send_message(self, text: str):
         self.client.chat_postMessage(channel=self.channel_id, text=text)
 
+    def send_thread_message(self, thread_ts: str, text: str) -> str:
+        """Postea en el hilo de `thread_ts`. Devuelve el ts del mensaje nuevo."""
+        r = self.client.chat_postMessage(
+            channel=self.channel_id, thread_ts=thread_ts, text=text
+        )
+        return r["ts"]
+
+    def wait_for_yes_no(self, thread_ts: str, after_ts: str,
+                         timeout: int = 600, poll_interval: int = 10) -> str | None:
+        """Espera respuesta yes/no en el hilo `thread_ts`, solo cuenta mensajes
+        posteriores a `after_ts` (para distinguir la pregunta de respuestas
+        previas).
+
+        Devuelve:
+          'yes' si alguien dice si/sí/yes/y/dale/adelante/comprime
+          'no'  si alguien dice no/n/cancel/salta/saltar
+          None  si timeout.
+        """
+        deadline = time.time() + timeout
+        YES = {"si", "sí", "yes", "y", "dale", "adelante", "comprime", "recomprime"}
+        NO = {"no", "n", "cancel", "salta", "saltar", "skip"}
+        log.info(f"Esperando yes/no en hilo {thread_ts} (timeout {timeout}s)...")
+        while time.time() < deadline:
+            try:
+                r = self.client.conversations_replies(
+                    channel=self.channel_id, ts=thread_ts, limit=50,
+                )
+                for m in r.get("messages", []):
+                    mts = m.get("ts", "")
+                    if mts <= after_ts:
+                        continue
+                    if m.get("bot_id"):
+                        continue
+                    text = m.get("text", "").strip().lower()
+                    words = set(text.split())
+                    if words & YES:
+                        log.info(f"Respuesta YES en hilo: {text!r}")
+                        return "yes"
+                    if words & NO:
+                        log.info(f"Respuesta NO en hilo: {text!r}")
+                        return "no"
+            except SlackApiError as e:
+                log.warning(f"Error leyendo hilo {thread_ts}: {e}")
+            time.sleep(poll_interval)
+        log.info(f"Timeout esperando yes/no en hilo {thread_ts}")
+        return None
+
     def wait_for_confirmation(self, channel: str, message_ts: str,
                               timeout: int = 3600, poll_interval: int = 15) -> bool:
         """

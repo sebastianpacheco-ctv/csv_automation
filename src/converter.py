@@ -32,14 +32,18 @@ class VideoConverter:
                 return float(d)
         raise RuntimeError("No se pudo obtener duración")
 
-    def convert(self, input_path: Path) -> Path | None:
+    def convert(self, input_path: Path, override_bitrate_mbps: int = None) -> Path | None:
         try:
             duration = self.get_duration(input_path)
         except Exception as e:
             log.error(f"Error duración: {e}")
             return None
 
-        bitrate = self.bitrate_short if duration <= self.duration_threshold else self.bitrate_long
+        if override_bitrate_mbps is not None:
+            bitrate = max(int(override_bitrate_mbps), 1)
+            log.info(f"Bitrate forzado por caller: {bitrate} Mbps")
+        else:
+            bitrate = self.bitrate_short if duration <= self.duration_threshold else self.bitrate_long
         self.last_bitrate = bitrate
         estimated_mb = (bitrate * 1_000_000 * duration) / (8 * 1024 * 1024)
         log.info(f"Duración: {duration:.1f}s → {bitrate} Mbps (~{estimated_mb:.1f} MB)")

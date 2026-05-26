@@ -505,29 +505,60 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             )
 
         # ── 7. Adjuntar el .mp4 convertido al ticket Jira ─────────────────
-        # NO se borra el adjunto original (regla absoluta). El comentario de
-        # abajo avisa al equipo de que pueden borrarlo a mano si lo desean.
-        # Pre-check: si pesa mas del limite, no intentamos adjuntar y avisamos.
+        # NO se borra el adjunto original (regla absoluta). Si pesa mas de
+        # MAX_JIRA_ATTACH_MB, preguntamos al usuario en el hilo si quiere
+        # que el bot recomprima a un bitrate que quepa.
         attached_ok = False
         attach_skip_reason = None
         if size_mb > MAX_JIRA_ATTACH_MB:
-            attach_skip_reason = (f"archivo de {size_mb:.1f} MB supera el limite "
-                                  f"de {MAX_JIRA_ATTACH_MB} MB para Jira")
-            slack.send_message(
-                f"⚠️ *{ticket_key}*: no adjunto el .mp4 al ticket — {attach_skip_reason}.\n"
-                f"Si lo necesitas en el ticket, descargalo de Filestage/Studio "
-                f"y subelo manualmente."
+            duration_s = converter.get_duration(input_path)
+            # Bitrate objetivo: que el video + audio sumen <=(MAX-5) MB.
+            # Audio AAC ~256 kbps = 0.256 Mbps. Damos margen extra de 0.3 Mbps.
+            target_mb = MAX_JIRA_ATTACH_MB - 5
+            target_total_mbps = (target_mb * 8) / duration_s
+            target_video_mbps = max(int(target_total_mbps - 0.3), 3)
+            slack_q_ts = slack.send_thread_message(msg["ts"],
+                f"⚠️ *{ticket_key}*: el .mp4 pesa *{size_mb:.1f} MB* (>{MAX_JIRA_ATTACH_MB} MB para Jira).\n"
+                f"Puedo recomprimir a *~{target_video_mbps} Mbps* (esperado ~{target_mb} MB).\n"
+                f"Responde *si* para recomprimir, *no* para saltar el adjunto. Timeout 10 min."
             )
-            log.warning(f"{ticket_key}: skip attach — {attach_skip_reason}")
-        else:
+            log.info(f"{ticket_key}: solicitada confirmacion de recompresion ({size_mb:.1f}MB → {target_video_mbps}Mbps)")
+            answer = slack.wait_for_yes_no(msg["ts"], slack_q_ts, timeout=600)
+            if answer == "yes":
+                slack.send_thread_message(msg["ts"],
+                    f"🔄 Recomprimiendo a {target_video_mbps} Mbps...")
+                # Borrar el .mp4 viejo antes de re-convertir
+                output_path.unlink()
+                new_output = converter.convert(input_path, override_bitrate_mbps=target_video_mbps)
+                if new_output:
+                    # Renombrar al canonical
+                    canonical_path = new_output.parent / f"{canonical_stem}.mp4"
+                    if canonical_path != new_output:
+                        if canonical_path.exists():
+                            canonical_path.unlink()
+                        new_output.rename(canonical_path)
+                    output_path = canonical_path
+                    size_mb = output_path.stat().st_size / (1024 * 1024)
+                    slack.send_thread_message(msg["ts"],
+                        f"✅ Re-convertido: {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
+                    log.info(f"{ticket_key}: re-convertido a {size_mb:.1f}MB")
+                else:
+                    attach_skip_reason = "re-conversion fallo"
+                    slack.send_thread_message(msg["ts"],
+                        f"❌ Re-conversion fallo. No adjunto el .mp4.")
+            else:
+                attach_skip_reason = (f"archivo de {size_mb:.1f} MB > {MAX_JIRA_ATTACH_MB} MB; "
+                                      f"usuario {'respondio NO' if answer == 'no' else 'no respondio a tiempo'}")
+                log.info(f"{ticket_key}: skip attach — {attach_skip_reason}")
+
+        # Si el tamaño esta OK (original o tras recompresion), intentar attach
+        if size_mb <= MAX_JIRA_ATTACH_MB and not attach_skip_reason:
             try:
                 jira.attach_file(ticket_key, output_path)
                 attached_ok = True
             except Exception as att_err:
-                # Errores tipicos: nombre duplicado (ya existe un adjunto con
-                # ese nombre en el ticket), 413 (size limit del servidor),
-                # 401/403 (auth). El bot loguea el error completo en Slack
-                # para que el equipo decida si subirlo manual o ignorar.
+                # Errores tipicos: nombre duplicado en el ticket, 413 size del
+                # servidor, 401/403 auth. Loguea el body completo en Slack.
                 import requests as _rq
                 if isinstance(att_err, _rq.HTTPError) and att_err.response is not None:
                     body = att_err.response.text[:300]

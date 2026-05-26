@@ -502,19 +502,39 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         _cleanup_ticket_files(tmp_dir)
 
     except Exception as e:
+        # Regla del equipo: el bot NUNCA vuelve a Triage ni a Brand. Si algo
+        # falla durante el proceso, se deja el ticket en el estado actual
+        # (Triage si la primera transicion no llego a ejecutarse, o To Build
+        # si si lo hizo) y se avisa en Slack + comentario en Jira. Un humano
+        # decide que hacer.
         log.error(f"Error procesando {ticket_key}: {e}", exc_info=True)
-        slack.send_message(f"❌ *{ticket_key}* fallo durante el proceso. Revirtiendo a To Build...")
+        slack.send_message(
+            f"❌ *{ticket_key}* fallo durante el proceso.\n"
+            f"Error: `{type(e).__name__}: {e}`\n"
+            f"El ticket queda en su estado actual — el bot no revierte. "
+            f"Un humano debe revisar."
+        )
         try:
-            revert = jira.get_transitions(ticket_key)
-            for rname in ["Stop Building", "Reopen", "Back to To Build", "To Build"]:
-                if rname in revert:
-                    jira.transition(ticket_key, revert[rname])
-                    log.info(f"{ticket_key} → revertido a {rname}")
-                    break
-            else:
-                log.warning(f"Sin transicion de revert. Disponibles: {list(revert.keys())}")
-        except Exception as re_err:
-            log.error(f"Error revirtiendo estado: {re_err}")
+            jira.add_comment_adf(ticket_key, {
+                "type": "doc", "version": 1,
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "⚠️ El bot fallo al procesar este ticket. Error: "},
+                        {"type": "text", "text": f"{type(e).__name__}: {e}",
+                         "marks": [{"type": "code"}]},
+                    ],
+                }, {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text",
+                         "text": "El bot NO cambia el estado del ticket — un humano debe revisar "
+                                 "y decidir si re-procesar, enviar al cliente o cerrar."},
+                    ],
+                }],
+            })
+        except Exception as ce:
+            log.warning(f"No se pudo dejar comentario de error en {ticket_key}: {ce}")
 
 
 # ── Loop principal ────────────────────────────────────────────────────────────

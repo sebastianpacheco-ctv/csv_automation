@@ -272,14 +272,43 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 6. **Esperado:** el script intenta subir, espera 60s + 30s. Es esperable que lance `StudioVideoNotReadyError` (el pipeline CTV tarda 15-20+ min). El `video_id` queda persistido en `tmp/SDS-21631/.studio_video_id`. Re-ejecutar más tarde salta el upload y sólo hace la espera + creative.
 7. **NUNCA borrar nada de Studio ni de Jira** durante o después del test, ni siquiera artefactos que el bot haya creado.
 
-## Estado verificado el 2026-05-22 (smoke pre-lunes)
-- ✅ Jira polling live: cola 1597 → 1 ticket (SDS-21631), batched JQL OK, customfields `15831`/`15865`/`14324` poblados.
-- ❌ Filestage cookie: HTTP 401 — renovar (paso 2 del pre-flight).
-- ⏸ Studio: pendiente de JWT fresco. La validación se hace cuando arranque el test.
-- ✅ ffmpeg 8.1.1, venv con todas las deps, sintaxis e imports limpios.
-- ✅ Repo inicializado con commit `0d017ff`.
+## Estado verificado el 2026-05-26 (pre-burn-in)
+Ejecutar `python3 scripts/preflight.py` para revalidar en cualquier momento.
 
-## Cómo arrancar (manual)
+- ✅ ffmpeg 8.1.1 en PATH.
+- ✅ Python deps: requests, slack_sdk, dotenv, playwright.
+- ✅ Slack: bot `@csv_ctv` autenticado en team Seedtag.
+- ✅ Filestage cookie: HTTP 200, 16 folders accesibles. (Renovada desde el 22-may.)
+- ✅ Jira polling: cola 1597 → 1 ticket (SDS-21631), batched JQL OK, customfields poblados.
+- ⏸ Studio JWT: pendiente — `STUDIO_JWT_COOKIE` vacío en `.env`. Único bloqueante.
+- ✅ Repo sincronizado en `github.com/sebastianpacheco-ctv/csv_automation` (HEAD `165dbd1`).
+
+## Cómo arrancar el burn-in (procedimiento completo)
+
+```bash
+cd csv-automation
+source venv/bin/activate
+
+# 1. Extraer JWT bot Studio (UNICA accion manual):
+#    https://studio.seedtag.com logueado como design_automations@seedtag.com
+#    DevTools → Application → Cookies → copiar seedtag_jwt
+#    Pegar en .env como STUDIO_JWT_COOKIE=eyJ...
+
+# 2. Verificar todo el stack
+python3 scripts/preflight.py
+#    Si algo falla, corregir antes de continuar.
+
+# 3. (Opcional) Correr el test aislado de Studio una vez
+python3 src/test_real_ticket.py
+
+# 4. Instalar launchd para burn-in 24/7
+./scripts/launchd.sh install
+
+# 5. Ver logs en vivo
+./scripts/launchd.sh logs
+```
+
+## Cómo arrancar (manual, sin launchd)
 ```bash
 cd csv-automation
 source venv/bin/activate

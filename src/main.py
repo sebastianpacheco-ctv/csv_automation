@@ -595,8 +595,13 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         # El nombre de la transicion depende del estado actual:
         #   Triage   → Building  via 'Send to Building'
         #   To Build → Building  via 'Start Building'
-        # Probamos ambos en orden; el primero que exista lo usamos.
+        # AMBAS requieren que el ticket tenga customfield_15826 (Seedtag Specs)
+        # rellenado. El field NO esta en el screen de la transicion, asi que
+        # hay que setearlo con PUT al issue ANTES de transicionar (descubierto
+        # via burn-in 26-may: el body de POST /transitions con el field daba
+        # 'cannot be set, not on appropriate screen').
         try:
+            jira.set_fields(ticket_key, {"customfield_15826": {"id": "27743"}})
             transitions = jira.get_transitions(ticket_key)
             for tname in ("Start Building", "Send to Building"):
                 if tname in transitions:

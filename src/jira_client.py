@@ -295,6 +295,20 @@ class JiraClient:
         r.raise_for_status()
         return {t["name"]: t["id"] for t in r.json().get("transitions", [])}
 
+    def set_fields(self, ticket_key: str, fields: dict):
+        """PUT al issue para setear campos directamente. Usar antes de una
+        transicion si esta exige fields que el body de /transitions no acepta
+        (caso: workflow con campos que no estan en el screen de la transicion).
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{ticket_key}"
+        r = requests.put(url, auth=self.auth,
+                         headers={**self.headers, "Content-Type": "application/json"},
+                         json={"fields": fields})
+        if r.status_code >= 400:
+            log.warning(f"{ticket_key}: set_fields fallo HTTP {r.status_code} — {r.text[:300]}")
+            r.raise_for_status()
+        log.info(f"{ticket_key}: fields actualizados ({list(fields.keys())})")
+
     def transition(self, ticket_key: str, transition_id: str, fields: dict | None = None):
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/transitions"
         body: dict = {"transition": {"id": transition_id}}
@@ -303,5 +317,11 @@ class JiraClient:
         r = requests.post(url, auth=self.auth,
                           headers={**self.headers, "Content-Type": "application/json"},
                           json=body)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Loguear el body real de Jira facilita diagnosticar campos
+            # requeridos que el endpoint /transitions?expand=fields a veces
+            # no reporta como required.
+            log.warning(f"{ticket_key}: transicion {transition_id} fallo "
+                        f"HTTP {r.status_code} — {r.text[:300]}")
+            r.raise_for_status()
         log.info(f"{ticket_key}: transicion {transition_id} ejecutada")

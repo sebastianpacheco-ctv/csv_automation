@@ -61,7 +61,9 @@ if not jwt:
     sys.exit(1)
 
 # ── 1. Descarga del attachment ─────────────────────────────────────────────
-tmp_dir = Path(__file__).parent.parent / "tmp" / TICKET_KEY
+# Usar TMP_DIR del .env (mismo valor que main.py) para que el .studio_video_id
+# sidecar viva en la misma raiz que el resto de artefactos del bot.
+tmp_dir = Path(os.getenv("TMP_DIR", "./tmp")) / TICKET_KEY
 tmp_dir.mkdir(parents=True, exist_ok=True)
 raw_path = tmp_dir / ATTACHMENT_FILENAME
 

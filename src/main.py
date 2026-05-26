@@ -21,6 +21,7 @@ import re
 import json
 import time
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -33,11 +34,18 @@ from studio_api import StudioAPIClient, StudioVideoNotReadyError, StudioJWTExpir
 
 load_dotenv()
 
+_logs_dir = Path(os.getenv("LOGS_DIR", "./logs"))
+_logs_dir.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(Path(os.getenv("LOGS_DIR", "./logs")) / "automation.log"),
+        RotatingFileHandler(
+            _logs_dir / "automation.log",
+            maxBytes=10 * 1024 * 1024,  # 10 MB por archivo
+            backupCount=5,               # 5 archivos rotados -> 60 MB max
+            encoding="utf-8",
+        ),
         logging.StreamHandler()
     ]
 )

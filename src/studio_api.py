@@ -450,6 +450,7 @@ class StudioAPIClient:
         }
 
     def process_video_to_creative(self, file_path: Path, ticket_title: str,
+                                  video_filename: str = None,
                                   country: str = None, category: str = None,
                                   initial_wait: int = 60, retry_wait: int = 30,
                                   max_retries: int = 1) -> dict:
@@ -466,10 +467,12 @@ class StudioAPIClient:
 
         country y category deben venir mapeados con map_country/map_category.
         """
-        # 1. Upload — filename = ticket_title para que Studio muestre el
-        # video con la convencion del equipo (_SDS_XXXXX_TIPO_<titulo>),
-        # no el filename del .mp4 generado por el converter.
-        video = self.upload_video(file_path, filename=ticket_title)
+        # 1. Upload — filename del video en Studio. Por defecto usa el
+        # ticket_title (convencion _SDS_XXXXX_TIPO_<titulo>). El caller
+        # puede pasar `video_filename` explicito si quiere un sufijo
+        # distinto (ej. "_CSV" para tickets CSV-CTV).
+        upload_filename = video_filename or ticket_title
+        video = self.upload_video(file_path, filename=upload_filename)
         video_id = video["id"]
 
         # 2. Wait for processing — propaga StudioVideoNotReadyError si no llega

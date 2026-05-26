@@ -75,6 +75,76 @@ def _save_seen_tickets(path: Path, seen: set[str]) -> None:
         log.warning(f"No se pudo escribir {path}: {e}")
 
 
+def _build_done_comment(studio_url: str | None,
+                        filestage_url: str | None,
+                        attached_filename: str | None) -> dict:
+    """Construye el doc ADF para el comentario que el bot deja en Jira tras
+    procesar un ticket. Sin specs tecnicas; links clickables; nota de que el
+    adjunto original puede borrarse a mano (el bot nunca borra).
+    """
+    paragraphs = []
+    paragraphs.append({
+        "type": "paragraph",
+        "content": [
+            {"type": "text", "text": "✅ Video CSV/COV convertido y subido automaticamente."},
+        ],
+    })
+
+    if studio_url:
+        paragraphs.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "Preview Studio: "},
+                {
+                    "type": "text",
+                    "text": studio_url,
+                    "marks": [{"type": "link", "attrs": {"href": studio_url}}],
+                },
+            ],
+        })
+    else:
+        paragraphs.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "⚠️ Studio: subir el video manualmente "
+                                          "(el bot no pudo terminar)."},
+            ],
+        })
+
+    if filestage_url:
+        paragraphs.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "Filestage: "},
+                {
+                    "type": "text",
+                    "text": filestage_url,
+                    "marks": [{"type": "link", "attrs": {"href": filestage_url}}],
+                },
+            ],
+        })
+
+    if attached_filename:
+        paragraphs.append({
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "Archivo convertido adjuntado a este ticket: "},
+                {"type": "text", "text": attached_filename, "marks": [{"type": "code"}]},
+            ],
+        })
+
+    paragraphs.append({
+        "type": "paragraph",
+        "content": [
+            {"type": "text",
+             "text": "Nota: el adjunto original puede borrarse manualmente si "
+                     "ya no lo necesitas. El bot nunca borra adjuntos."},
+        ],
+    })
+
+    return {"type": "doc", "version": 1, "content": paragraphs}
+
+
 def _cleanup_ticket_files(ticket_dir: Path) -> None:
     """Borra .mp4 raw + convertido tras procesar con exito.
     Conserva .studio_video_id (idempotencia) y cualquier otro fichero no .mp4.
@@ -290,16 +360,20 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
     slack.send_message(f"✅ Confirmado. Procesando *{ticket_key}*...")
 
-    # ── 3. Cambiar estado a Building ──────────────────────────────────────
+    # ── 3. Cambiar estado a To Build (Triage → To Build) ──────────────────
+    # Workflow real: Triage --[Send to Operations]--> To Build --[Send to Building]--> Building
+    # El bot pone el ticket en To Build al empezar; cuando termina lo pasa a Building
+    # para que el equipo lo revise.
     try:
         transitions = jira.get_transitions(ticket_key)
-        if "Start Building" in transitions:
-            # customfield_15826 = Seedtag Specs — requerido para la transicion
-            jira.transition(ticket_key, transitions["Start Building"],
-                            fields={"customfield_15826": {"id": "27743"}})
-            log.info(f"{ticket_key} → Building")
+        if "Send to Operations" in transitions:
+            jira.transition(ticket_key, transitions["Send to Operations"])
+            log.info(f"{ticket_key} → To Build")
+        else:
+            log.warning(f"{ticket_key}: sin transicion 'Send to Operations'. "
+                        f"Disponibles: {list(transitions.keys())}")
     except Exception as e:
-        log.warning(f"No se pudo cambiar estado a Building: {e}")
+        log.warning(f"No se pudo cambiar estado a To Build: {e}")
 
     # ── 4-8. Proceso (revert a To Build si falla) ─────────────────────────
     try:
@@ -333,11 +407,10 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
         # ── 6. Filestage ──────────────────────────────────────────────────
         filestage_url = None
-        filestage_line = ""
+        filestage_url = None
         try:
             filestage_url = filestage.upload(output_path, summary, operator_entity)
             if filestage_url:
-                filestage_line = f"\n• Filestage: {filestage_url}"
                 slack.send_message(f"📋 Filestage ✓")
         except Exception as fe:
             log.warning(f"Filestage fallo: {fe}")
@@ -351,7 +424,8 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             category = studio.map_category(industry)
             result = studio.process_video_to_creative(
                 file_path=output_path,
-                ticket_title=summary,  # name del creative = summary del ticket
+                ticket_title=summary,        # name del creative = summary del ticket
+                video_filename=f"{summary}_CSV",  # nombre del video en Studio (con sufijo _CSV)
                 country=country,
                 category=category,
             )
@@ -384,20 +458,24 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                 f"⚠️ *Studio error* — sube `{output_path.name}` manualmente al ticket {ticket_key}."
             )
 
-        # ── 7. Comentar en Jira ───────────────────────────────────────────
-        studio_line = f"\n• Preview Studio: {studio_url}" if studio_url else ""
-        jira.add_comment(ticket_key,
-            f"✅ Standard Video (CSV/COV) convertido automaticamente.\n\n"
-            f"Especificaciones:\n"
-            f"• Codec: H.264 | Resolucion: 1920x1080 | FPS: 29.97\n"
-            f"• Bitrate: {converter.last_bitrate} Mbps | Tamano: {size_mb:.1f} MB\n"
-            f"• Audio: AAC 256kbps 48kHz Stereo | Loudness: -24 LUFS"
-            f"{filestage_line}"
-            f"{studio_line}"
-        )
+        # ── 7. Adjuntar el .mp4 convertido al ticket Jira ─────────────────
+        # NO se borra el adjunto original (regla absoluta). El comentario de
+        # abajo avisa al equipo de que pueden borrarlo a mano si lo desean.
+        attached_ok = False
+        try:
+            jira.attach_file(ticket_key, output_path)
+            attached_ok = True
+        except Exception as att_err:
+            log.warning(f"No se pudo adjuntar convertido a {ticket_key}: {att_err}")
 
-        # ── 8. Resumen en Slack ───────────────────────────────────────────
-        # El usuario cambia el estado a Done tras revisar el resultado
+        # ── 8. Comentar en Jira (ADF con links clickables) ────────────────
+        jira.add_comment_adf(ticket_key, _build_done_comment(
+            studio_url=studio_url,
+            filestage_url=filestage_url,
+            attached_filename=output_path.name if attached_ok else None,
+        ))
+
+        # ── 9. Resumen en Slack ───────────────────────────────────────────
         slack.send_message(
             f"✅ *{ticket_key}* listo para revision:\n"
             f"• Archivo: `{output_path.name}`\n"
@@ -407,7 +485,20 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         )
         log.info(f"✅ {ticket_key} procesado — pendiente revision del equipo")
 
-        # ── 9. Cleanup: borrar .mp4 (raw + convertido). Conservar .studio_video_id.
+        # ── 10. Transicion final: To Build → Building ─────────────────────
+        # El equipo revisa desde Building y decide cuando marcar Done.
+        try:
+            transitions = jira.get_transitions(ticket_key)
+            if "Send to Building" in transitions:
+                jira.transition(ticket_key, transitions["Send to Building"])
+                log.info(f"{ticket_key} → Building")
+            else:
+                log.warning(f"{ticket_key}: sin transicion 'Send to Building'. "
+                            f"Disponibles: {list(transitions.keys())}")
+        except Exception as e:
+            log.warning(f"No se pudo cambiar estado a Building: {e}")
+
+        # ── 11. Cleanup: borrar .mp4 (raw + convertido). Conservar .studio_video_id.
         _cleanup_ticket_files(tmp_dir)
 
     except Exception as e:

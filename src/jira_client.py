@@ -274,6 +274,20 @@ class JiraClient:
         r.raise_for_status()
         log.info(f"Comentario añadido a {ticket_key}")
 
+    def add_comment_adf(self, ticket_key: str, doc_body: dict):
+        """Variante de add_comment que acepta el doc ADF (Atlassian Document Format)
+        ya construido. Necesaria para comentarios con links clickables, formato,
+        codigos inline, etc.
+
+        doc_body debe ser un dict tipo {"type": "doc", "version": 1, "content": [...]}.
+        """
+        url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/comment"
+        r = requests.post(url, auth=self.auth,
+                          headers={**self.headers, "Content-Type": "application/json"},
+                          json={"body": doc_body})
+        r.raise_for_status()
+        log.info(f"Comentario (ADF) añadido a {ticket_key}")
+
     def get_transitions(self, ticket_key: str) -> dict:
         """Devuelve {nombre_transicion: id} para las transiciones disponibles."""
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/transitions"

@@ -9,13 +9,16 @@ import os
 import logging
 import requests
 from pathlib import Path
+from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
 
 class FilestageUploader:
     def __init__(self, session_cookie: str = None, api_key: str = None,
-                 email: str = None, password: str = None):
+                 email: str = None, password: str = None,
+                 on_refresh_failure: Optional[Callable[[str], None]] = None,
+                 failure_threshold: int = 3):
         self.session_cookie = session_cookie
         self.api_key = api_key
         self.email = email
@@ -23,13 +26,50 @@ class FilestageUploader:
         self.team_id = "e16f96c4de9a0c1b11bbebab1ac09104"
         self.user_id = "b1cd742149aa51b33b01fec0e3b93663"
         self.ctv_folder_id = "ea234d4b3fcd0eb17588e4fd9b852102"
+        # Hardening: contador de fallos consecutivos del refresh + callback
+        # para alertar a Slack tras `failure_threshold` intentos seguidos.
+        self.on_refresh_failure = on_refresh_failure
+        self.failure_threshold = failure_threshold
+        self._refresh_failures = 0
+        self._alerted = False
 
     def _cookies(self):
         name = os.getenv("FILESTAGE_COOKIE_NAME", "registeredSessionId")
         return {name: self.session_cookie} if self.session_cookie else {}
 
     def _refresh_cookie(self):
-        """Renueva la cookie de sesion via Playwright cuando expira."""
+        """Renueva la cookie de sesion via Playwright cuando expira.
+
+        Cuenta fallos consecutivos; tras `failure_threshold` invoca el
+        callback `on_refresh_failure` (una sola vez hasta que un refresh
+        vuelva a tener exito).
+        """
+        ok = self._refresh_cookie_inner()
+        if ok:
+            if self._refresh_failures or self._alerted:
+                log.info(f"Filestage refresh recuperado tras {self._refresh_failures} fallos")
+            self._refresh_failures = 0
+            self._alerted = False
+            return True
+        self._refresh_failures += 1
+        log.warning(f"Filestage refresh fallo (intento {self._refresh_failures})")
+        if (self._refresh_failures >= self.failure_threshold
+                and not self._alerted
+                and self.on_refresh_failure):
+            try:
+                self.on_refresh_failure(
+                    f"🚨 *Filestage — renovacion de cookie fallando* "
+                    f"({self._refresh_failures} intentos consecutivos)\n"
+                    f"Playwright no consigue loguear con `STUDIO_EMAIL`. "
+                    f"Renueva manualmente `FILESTAGE_SESSION_COOKIE` desde DevTools "
+                    f"o revisa si Filestage cambio el flujo de login."
+                )
+                self._alerted = True
+            except Exception as e:
+                log.error(f"No se pudo enviar alerta de Filestage refresh: {e}")
+        return False
+
+    def _refresh_cookie_inner(self):
         if not self.email or not self.password:
             log.warning("Sin credenciales Filestage — no se puede renovar cookie")
             return False

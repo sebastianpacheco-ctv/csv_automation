@@ -449,6 +449,7 @@ def main():
         api_key=os.getenv("FILESTAGE_API_KEY"),
         email=os.getenv("STUDIO_EMAIL"),
         password=os.getenv("STUDIO_PASSWORD"),
+        on_refresh_failure=slack.send_message,
     )
 
     # Asignar callback de status para responder durante la espera del ok

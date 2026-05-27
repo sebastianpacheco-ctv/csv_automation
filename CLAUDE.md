@@ -12,36 +12,48 @@ No mirar la cola 162 ni ninguna otra cola.
 Bot de automatización para el equipo CTV de Seedtag Design Studio (SDS).
 Detecta tickets de Jira con formato Standard Video (CSV/COV), convierte el vídeo al formato Seedtag y lo sube a Filestage y Studio Seedtag.
 
-## Flujo completo
-1. **Polling Jira** cada 60s — cola **1597** (URL en HARD RULE arriba)
-2. **Detecta tickets CSV/COV** — primero el `requestType.id == "1916"` del formulario nuevo, fallback por keywords en título/descripción/customfields
-3. **Notifica en Slack** `#csv-tickets` — bot "CSV CTV"
-4. **Espera confirmación** — respuesta "ok" en el hilo del mensaje
-5. **Descarga el vídeo** — adjunto directo o link (WeTransfer; Drive no funciona por Smart Links)
-6. **Convierte con FFmpeg** — H.264, 1920x1080, 29.97fps, AAC 256kbps, -24 LUFS
-   - ≤ 30s → 30 Mbps
-   - > 30s → 15 Mbps (límite 200MB de Studio Seedtag)
-7. **Sube a Filestage** — folder CTV, proyecto = título del ticket
-8. **Sube a Studio Seedtag** vía API GraphQL bajo el bot `design_automations@seedtag.com`:
-   - Upload con pipeline `ctv-base` (id `68d10800680fb2e148f30961`)
-   - Espera procesado: **60s → check → 30s → check → Slack alert** si no llega
-   - Crea creative CSV-CTV con `createCovCreative`
-9. **Añade comentario en Jira** — link de Filestage + preview de Studio + specs técnicas
+## Flujo completo (actualizado 2026-05-27 tras burn-in)
+1. **Polling Jira** cada 60s — cola **1597** (URL en HARD RULE arriba). Procesa los tickets SECUENCIALMENTE (uno termina antes de empezar el siguiente).
+2. **Detecta tickets CSV/COV** — primero el `requestType.id == "1916"` del formulario nuevo, fallback por keywords. La cola 1597 es CSV-only por diseño.
+3. **QR check** — si el ticket tiene el campo "Advertiser's website for QR" relleno (vive en Atlassian Forms, NO es un customfield estándar — ver sección QR): el bot transiciona a To Build y **NO procesa el video** (avisa en Slack para QR manual).
+4. **Descarga TODOS los adjuntos de video** del cliente (multi-mp4 → N creatives). Ignora los adjuntos que el propio bot subió (`_STANDARD_VIDEO_CONVERTED`, `_CTV_CSV[_Vn]`).
+5. **Notifica en Slack** `#csv-tickets` con el **plan**: por cada video, nombre canónico + duración + bitrate + tamaño estimado.
+6. **Espera confirmación** — `ok` / `no` en el hilo. `no` → cancela (reactivable con `reactivar SDS-XXX`).
+7. **Transición Triage → To Build** vía `Send to Operations`.
+8. **Por cada video** (loop):
+   - **Convierte con FFmpeg** — H.264, 1920×1080, 29.97fps, AAC 256kbps, -24 LUFS. ≤30s → 30 Mbps; >30s → 15 Mbps.
+   - **Renombra** al nombre canónico (`<summary_sanitizado>[_CTV_CSV][_Vn]`).
+   - **Sube a Studio** bajo el bot `design_automations@seedtag.com`, pipeline **`ctv-base`** (⚠️ el SELECTOR_NAME string, NO el id hex — ver sección Studio).
+   - **Espera procesado**: 10s → check → 10s × 15 (Studio completa en ~10-30s). Si tarda más → `pending_studio.json` 2da pasada.
+   - **Crea creative** CSV-CTV con `createCovCreative`.
+   - **Adjunta el .mp4** al ticket Jira (pre-check 150MB: si supera, pregunta en Slack si recomprime).
+9. **Comentario en Jira** (ADF clickable) con los preview links de todos los creatives + nota de borrar originales.
+10. **Setea customfield_15826** (Seedtag Specs, id 27743) vía PUT, luego **transición To Build → Building** vía `Start Building`.
+11. **Cleanup** de los .mp4 en `tmp/<TICKET>/` (conserva sidecars).
+
+**Filestage: ELIMINADO del flujo** (26-may-2026). El equipo no lo usa para review; será reemplazado por GCS al migrar.
+
+Todos los mensajes de progreso de un ticket van al **hilo** de su notificación inicial (canal principal limpio).
 
 ## Estructura
 ```
 csv-automation/
 ├── src/
-│   ├── main.py            # Orquestador + detección de tickets
-│   ├── jira_client.py     # API Jira (❌ pendiente migración a POST /search/jql, cola 1597)
-│   ├── slack_client.py    # Bot Slack — notificaciones + espera "ok"
-│   ├── converter.py       # FFmpeg — bitrate adaptativo por duración
-│   ├── studio_api.py      # ✅ NUEVO — cliente GraphQL para Studio Seedtag
-│   ├── uploader.py        # FilestageUploader (S3 multipart) — el Studio Playwright fue eliminado
-│   └── test_real_ticket.py # Script de integración end-to-end contra un ticket real
+│   ├── main.py            # Orquestador, detección, loop multi-video, comandos Slack
+│   ├── jira_client.py     # API Jira (POST /search/jql cola 1597, forms.cloud para QR, transiciones)
+│   ├── slack_client.py    # Bot Slack — notificación con plan, wait_for_ticket_response, reactivar
+│   ├── converter.py       # FFmpeg — bitrate adaptativo + override para recompresión
+│   ├── studio_api.py      # Cliente GraphQL Studio (pipeline selector_name, retry name-exists)
+│   ├── uploader.py        # FilestageUploader — DESACTIVADO del flujo (se conserva por si acaso)
+│   └── test_real_ticket.py # Script de integración end-to-end
+├── deploy/
+│   ├── launchd/com.seedtag.csv-automation.plist  # servicio macOS para burn-in
+│   └── encoding-preset/   # Mezzanine_TradeDesk_29.97.epr (fuente de verdad del encoding) + README
+├── scripts/
+│   ├── preflight.py       # valida ffmpeg/deps/.env/Slack/Filestage/Studio/Jira
+│   └── launchd.sh         # install/uninstall/restart/status/logs del servicio
 ├── requirements.txt
 ├── .env                   # Credenciales (NO subir a git)
-├── .env.example
 └── CLAUDE.md              # Este archivo
 ```
 
@@ -113,14 +125,31 @@ CSV_KEYWORDS = ["standard video", "csv", "cov", "csv-ctv", "cov-ctv"]
 ```
 El bot busca estas keywords en título, descripción, todos los customfields de texto y comentarios.
 
-## Filestage — datos clave
-- **Team ID:** `e16f96c4de9a0c1b11bbebab1ac09104`
-- **User ID:** `b1cd742149aa51b33b01fec0e3b93663`
-- **Folder CTV ID:** `236e302dea2ac363db574559ac1ab4fb`
-- **API base:** `https://api.filestage.io` (sin /v1)
-- **Auth:** Cookie de sesión `registeredSessionId` (obtenida de DevTools en app.filestage.io)
-- **Upload:** S3 multipart — flujo: `s3-create` → `s3-multipart-create-signedurl` (una llamada por parte) → `s3-complete`
-- **⚠️ La cookie expira** con la sesión del navegador — hay que renovarla periódicamente
+## Detección de QR (Atlassian Forms)
+- El campo **"Advertiser's website for QR"** NO es un customfield estándar de Jira. Vive dentro de **Atlassian Forms** y solo se accede vía la API externa `https://api.atlassian.com/jira/forms/cloud/{cloudId}/issue/{key}/form` + `.../form/{form_id}`.
+- `JiraClient.get_form_answers(ticket_key)` lista las forms del ticket, cruza `design.questions[id].label` con `state.answers[id].text` y devuelve `{label: text}`.
+- Si algún label contiene "advertiser" + "qr" con valor no vacío → el bot transiciona a To Build y **NO procesa el video** (avisa en Slack para QR manual).
+
+## Workflow Jira (transiciones)
+```
+Triage  --[Send to Operations id=16]-->  To Build  --[Start Building id=5]-->  Building
+```
+- Al confirmar `ok`: `Send to Operations` (Triage → To Build).
+- Al terminar: `Start Building` (To Build → Building). Atajo desde Triage directo: `Send to Building`. El bot prueba ambos.
+- ⚠️ **`Start Building`/`Send to Building` exigen `customfield_15826` (Seedtag Specs) rellenado**, pero el field NO está en el screen de la transición. Hay que setearlo con **PUT `/issue/{key}`** ANTES de la transición (no en el body de `/transitions`, que devuelve "cannot be set, not on appropriate screen"). `JiraClient.set_fields()` hace el PUT.
+- ⛔ El bot **NUNCA** usa `Send back to Brand` ni vuelve a Triage. Si algo falla, deja el ticket donde esté + avisa.
+
+## Comandos Slack en `#csv-tickets`
+- `ok` / `si` / `dale` → procesar el ticket activo (con el plan mostrado).
+- `no` / `cancel` → cancelar; queda en `tmp/.canceled_tickets.json`.
+- `reactivar SDS-XXXXX` → re-habilita un ticket cancelado (lo saca de canceled + seen_tickets).
+- `status` → resumen de la cola.
+- Recompresión >150MB: el bot pregunta en el hilo `si`/`no`.
+
+## Filestage — DESACTIVADO del flujo (26-may-2026)
+El equipo CTV no usa Filestage para review (comentarios del cliente van a Jira) y `s3-complete` fallaba con 400. La clase `FilestageUploader` sigue en `src/uploader.py` por si se reactiva, pero `main.py` no la llama. Será reemplazado por GCS en la migración. Datos por si se reactiva:
+- **Team ID:** `e16f96c4de9a0c1b11bbebab1ac09104` · **User ID:** `b1cd742149aa51b33b01fec0e3b93663` · **API:** `https://api.filestage.io`
+- Auth cookie `registeredSessionId` (expira con la sesión). `s3-complete` necesita `uploadId` + `parts` con ETags (bug nunca arreglado porque se sacó del flujo).
 
 ## Slack — datos clave
 - **App:** "CSV CTV" (App ID: A0B2ARUN8FM reemplazada por nueva)
@@ -156,20 +185,22 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 - **Endpoint:** `POST https://studio.seedtag.com/g` (GraphQL endpoint estilo Apollo)
 - **Cookie:** `seedtag_jwt` con domain `.seedtag.com`
 - **Comportamiento:** cada llamada a Studio devuelve `set-cookie: seedtag_jwt=<nuevo JWT>` con `iat`/`exp` actualizados (+30 días). Mientras el bot esté haciendo llamadas, **la cookie nunca expira**.
-- **Persistencia:** `requests.Session()` mantiene el cookie jar en memoria. Para sobrevivir reinicios, persistir en sidecar `.studio_jwt` (gitignored). Pendiente implementar también heartbeat 24h + fallback Slack al recibir 401.
+- **Persistencia (4 capas, ✅ implementadas):** (1) cookie jar en `requests.Session()`; (2) sidecar `.studio_jwt` (gitignored, chmod 600) leído al arrancar y escrito tras cada call; (3) heartbeat 24h (`studio.heartbeat()` en el loop, dispara en arranque y cada 24h); (4) `StudioJWTExpiredError` en 401/403 capturado → aviso a `#csv-tickets`.
 
 ### Constantes clave
-- **Pipeline CTV:** `videoPipelineId = "68d10800680fb2e148f30961"` (selectorName: `ctv-base`). Si no se pasa, Studio usa `"legacy"` por defecto y genera formatos open-web baja calidad (max 960x540), NO CTV.
-- **Estados del vídeo:** `PROGRESSING` → `COMPLETED`. Estados de error: `ERROR`, `FAILED`. (NO son `ready`/`processing` como en otros sistemas.)
-- **Lentitud del procesado CTV:** observado **>15-20 minutos** para un vídeo de 19s en el pipeline `ctv-base`. El pipeline `legacy` en cambio termina en ~30s. Esto es normal y no es bug del cliente.
+- **Pipeline CTV:** ⚠️ usar el **selector_name** `"ctv-base"`, **NO el id hex** `"68d10800680fb2e148f30961"`. BUG CRÍTICO descubierto el 26-may-2026: aunque `getVideoTemplates` devuelve ambos identifiers para el mismo template, los videos subidos con el ID hex quedan **PROGRESSING para siempre**. Con el selector_name string el upload completa en ~10-30s. La constante `VIDEO_PIPELINE_CTV_BASE = "ctv-base"` en `studio_api.py`. Si se omite, Studio usa `"legacy"` (open-web ≤960×540, NO CTV).
+- **Estados del vídeo:** `PROGRESSING` → `COMPLETED`. Estados de error: `ERROR`, `FAILED`.
+- **Timing real del procesado CTV:** **~10-30 segundos** (con selector_name correcto). La nota vieja de ">15-20 minutos" era el síntoma del bug del ID hex, no el comportamiento real.
+- **`getVideoTemplates`** lista los 8 pipelines: `ctv-base` (CTV 720p/1080p), `omniscreen` (8 formatos incl. 1080p), `open-web-*` (varios), `legacy` (default rápido baja calidad). El bot usa `ctv-base`.
+- **Nombre duplicado:** Studio rechaza con `"The name already exists"`. `upload_video` reintenta UNA vez con sufijo `_RYYYYMMDDHHMM` para crear nombre único (no se puede borrar el viejo — regla absoluta).
 
 ### Patrón de espera tras upload (lo que ejecuta `wait_video_ready`)
 1. Subir el vídeo (`uploadVideo`)
-2. **Esperar 60s**
+2. **Esperar 10s** (initial_wait)
 3. Llamar `getVideoById` — si `state == COMPLETED` → seguir
-4. Si no, **esperar 30s** y llamar otra vez
-5. Si `COMPLETED` → seguir; si no → lanzar `StudioVideoNotReadyError`
-6. El orquestador captura esa excepción y postea en `#csv-tickets`. El vídeo queda subido en Studio; un humano completa el creative manualmente.
+4. Si no, **esperar 10s** y reintentar, hasta **15 retries** (~2.7 min total)
+5. Si `COMPLETED` → crear creative; si no → lanzar `StudioVideoNotReadyError`
+6. El orquestador captura esa excepción, postea en el hilo del ticket y guarda el `video_id` en `tmp/.pending_studio.json`. **Segunda pasada**: el loop principal revisa pending_studio cada 60s; cuando el video llega a COMPLETED crea el creative y postea un segundo comentario en Jira con el link. Cap de 2h.
 
 ### Validaciones del servidor
 - `uploadVideo.filename` solo acepta `[A-Z0-9_]+`, sin guiones ni extensión. La sanitización está en `StudioAPIClient._sanitize_video_filename()`. Ej: `'SDS-21644 Foo.mp4'` → `'_SDS_21644_FOO'`.
@@ -177,8 +208,8 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 - `AdTemplateInputType` requeridos: `name: String!`, `size: JSON!` (string `"WxH"`), `productFamily: String!` (`"ctv"` minúsculas), `shortCode: String!` (`"CSV-CTV"`), `manifest: JSON!`, `creativeTree: JSON!`. Toda la forma se construye con `build_csv_ctv_ad_template()`.
 
 ### Endpoints útiles y rotos
-- **Funciona:** `getVideoById`, `uploadVideo`, `createCovCreative`, `updateCreative`, `getCreativeById`, `getUser`, `getCreativeDimensions`
-- **❌ Roto para el bot:** `getVideosByQuery` devuelve `"Something broke!"` (INTERNAL_SERVER_ERROR) independientemente de los parámetros. **No podemos buscar vídeos por nombre**. Como workaround, persistimos el `video_id` en un sidecar `tmp/<TICKET>/.studio_video_id` para idempotencia (si el script muere a mitad, al reintentar salta el upload).
+- **Funciona:** `getVideoById`, `uploadVideo`, `createCovCreative`, `updateCreative`, `getCreativeById`, `getUser`, `getCreativeDimensions`, `getVideoTemplates`.
+- **`getVideosByQuery`:** estaba marcado como roto en commits viejos, pero con el JWT fresco del bot funciona. Aun así el flujo no depende de él (se reintenta por nombre con sufijo en vez de buscar).
 
 ### URLs finales
 - **VAST URL** (para Trade Desk / DSP): `https://creatives.seedtag.com/vasts/{video_id}.xml`
@@ -218,154 +249,74 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 - Añadidos `get_transitions()` y `transition()` que faltaban en `JiraClient`.
 - `FIELDS` alineado con lo que `main.py` realmente lee: añadidos `15867` (Formato adicional qty) y `15831` (Industry); quitados `14196`/`14197` (no se leían).
 
-### 2. Verificar end-to-end con el nuevo wiring de Studio — BLOQUEANTE FASE 1
-- `main.py` ya está enchufado a `StudioAPIClient` y maneja `StudioVideoNotReadyError` + `StudioJWTExpiredError`.
-- Falta probar el flujo completo con un ticket real cuando aparezca.
-- Confirmar que el pipeline CTV produce formatos 1080p (lo intentamos 22 mayo pero el vídeo nunca llegó a COMPLETED).
-- **Prerequisitos antes de arrancar el burn-in:**
-  1. Extraer `STUDIO_JWT_COOKIE` fresco (ver pre-flight más abajo).
-  2. Renovar `FILESTAGE_SESSION_COOKIE` (caducada el 2026-05-22, HTTP 401).
+### 2. ✅ Flujo end-to-end validado en burn-in (26-27 may 2026)
+- Validado en vivo con SDS-21709 y SDS-21715: Triage → To Build → convert → Studio (COMPLETED ~20-30s) → creative → comentario clickable → Building → cleanup.
+- **Bug crítico resuelto:** el `videoPipelineId` debía ser el selector_name `"ctv-base"`, no el id hex (con hex los videos quedaban PROGRESSING para siempre).
+- launchd auto-restart al login + persistencia JWT/seen_tickets sobrevivieron la noche.
 
-### 3. ✅ Persistencia del JWT del bot (cerrado 2026-05-22)
-- Layer 1 — cookie jar en memoria: `requests.Session()` en `StudioAPIClient`.
-- Layer 2 — sidecar `.studio_jwt` (gitignored, chmod 600). Cableado en `main.py` y `test_real_ticket.py`.
-- Layer 3 — heartbeat 24h: `studio.heartbeat()` en el loop, dispara en arranque (fail-fast) y cada 24h.
-- Layer 4 — `StudioJWTExpiredError` (HTTP 401/403) capturado en `process_ticket` y heartbeat, postea a `#csv-tickets`.
+### 3. ✅ Persistencia del JWT del bot (cerrado 2026-05-22, 4 capas)
+Ver sección "Auth — JWT rolling" arriba.
 
-### 4. Filestage — durante Fase 1 endurecer, en Fase 3 reemplazar
-- **Fase 1 (local):** hardening de `_refresh_cookie()` con try/except + contador de fallos + alerta Slack tras N intentos. Playwright sigue siendo la base.
-- **Fase 3 (GCP):** GCS bucket reemplaza Filestage como primary. Comentario de Jira lleva signed URL GCS. Filestage queda como toggle backup (`STORAGE_PRIMARY=gcs|filestage`) — el equipo CTV no usa Filestage para review, los comentarios del cliente van a Jira.
+### 4. ✅ Filestage sacado del flujo (26-may). Pendiente Fase 3: reemplazar por GCS.
 
-### 5. Despliegue a GCP (Fase 3)
+### 5. Despliegue a GCP (Fase 3) — PRÓXIMO GRAN PASO
 - Proyecto `decoded-theme-461808-d3` en GCP.
-- Compute Engine `e2-micro` (us-central1, free tier) + systemd unit.
-- Google Cloud Ops Agent para Logs Explorer + Monitoring Dashboards + Error Reporting + Alerting.
-- GCS bucket para vídeos procesados (signed URL 90 días).
-- Service account para auth GCS (cero cookies/JWTs humanos).
-- Bloqueado hasta que Fase 1 esté verde.
+- Compute Engine `e2-micro` (us-central1, free tier) + systemd unit (equivalente al launchd actual).
+- Google Cloud Ops Agent → Logs Explorer + Monitoring Dashboards + Error Reporting + Alerting.
+- GCS bucket para vídeos procesados (signed URL ~90 días) reemplazando Filestage. Service account = auth sin cookies.
+- Requiere instalar ffmpeg + venv en la VM. Playwright YA NO es necesario (Filestage fuera).
 
 ### Mejoras futuras (no bloqueantes)
-- Comando `status` en Slack — requiere threading.
+- #35: bajar videos desde más tipos de links (Drive/WeTransfer/Dropbox con auth/bypass). Pendiente definir qué servicios priorizar.
 - Soporte para Standard Display (JPG/PNG vía Pillow).
-- Manejo de Smart Links de Drive.
-- Service Desk queue endpoint hardcodea `limit=50` y no pagina. OK con volumen actual; flag si la cola crece.
+- Procesamiento paralelo de tickets (hoy es serial; suficiente para 3-5/día).
+- Service Desk queue endpoint hardcodea `limit=50` y no pagina. OK con volumen actual.
 
-## Pre-flight para correr `test_real_ticket.py`
-1. **Extraer JWT fresco del bot Studio:**
-   - Loguearse en `https://studio.seedtag.com` como `design_automations@seedtag.com`.
-   - DevTools → Application → Cookies → `https://studio.seedtag.com` → copiar el valor de `seedtag_jwt`.
-2. **Renovar cookie Filestage** (verificada caducada el 2026-05-22, HTTP 401):
-   - Loguearse en `https://app.filestage.io`.
-   - DevTools → Application → Cookies → copiar el valor de `registeredSessionId` a `FILESTAGE_SESSION_COOKIE` en `.env`.
-   - (No bloquea `test_real_ticket.py` porque ese script no toca Filestage, pero sí bloquea `main.py` cuando se procese el primer ticket.)
-3. **Setear el JWT Studio en shell** (o actualizar `.env`):
-   ```bash
-   export STUDIO_JWT_COOKIE='eyJ...'
-   ```
-4. **Verificar que `tmp/SDS-21631/` no tiene `.studio_video_id`** (si lo tiene, el upload se salta y se reintenta sólo la espera + creative). Los `.mp4` raw y convertido ya están desde la prueba del 22 mayo, así que el script saltará la descarga y la conversión.
-5. **Arrancar el test en foreground** (NO background — perdemos stdout):
-   ```bash
-   cd /Users/sebastianpacheco/csv-automation
-   source venv/bin/activate
-   python3 src/test_real_ticket.py
-   ```
-6. **Esperado:** el script intenta subir, espera 60s + 30s. Es esperable que lance `StudioVideoNotReadyError` (el pipeline CTV tarda 15-20+ min). El `video_id` queda persistido en `tmp/SDS-21631/.studio_video_id`. Re-ejecutar más tarde salta el upload y sólo hace la espera + creative.
-7. **NUNCA borrar nada de Studio ni de Jira** durante o después del test, ni siquiera artefactos que el bot haya creado.
-
-## Estado verificado el 2026-05-26 (pre-burn-in)
-Ejecutar `python3 scripts/preflight.py` para revalidar en cualquier momento.
-
-- ✅ ffmpeg 8.1.1 en PATH.
-- ✅ Python deps: requests, slack_sdk, dotenv, playwright.
-- ✅ Slack: bot `@csv_ctv` autenticado en team Seedtag.
-- ✅ Filestage cookie: HTTP 200, 16 folders accesibles. (Renovada desde el 22-may.)
-- ✅ Jira polling: cola 1597 → 1 ticket (SDS-21631), batched JQL OK, customfields poblados.
-- ⏸ Studio JWT: pendiente — `STUDIO_JWT_COOKIE` vacío en `.env`. Único bloqueante.
-- ✅ Repo sincronizado en `github.com/sebastianpacheco-ctv/csv_automation` (HEAD `165dbd1`).
-
-## Cómo arrancar el burn-in (procedimiento completo)
-
+## Cómo arrancar / operar (burn-in local con launchd)
 ```bash
-cd csv-automation
+cd /Users/sebastianpacheco/csv-automation
 source venv/bin/activate
-
-# 1. Extraer JWT bot Studio (UNICA accion manual):
-#    https://studio.seedtag.com logueado como design_automations@seedtag.com
-#    DevTools → Application → Cookies → copiar seedtag_jwt
-#    Pegar en .env como STUDIO_JWT_COOKIE=eyJ...
-
-# 2. Verificar todo el stack
-python3 scripts/preflight.py
-#    Si algo falla, corregir antes de continuar.
-
-# 3. (Opcional) Correr el test aislado de Studio una vez
-python3 src/test_real_ticket.py
-
-# 4. Instalar launchd para burn-in 24/7
-./scripts/launchd.sh install
-
-# 5. Ver logs en vivo
-./scripts/launchd.sh logs
+python3 scripts/preflight.py          # valida todo el stack (7 checks)
+./scripts/launchd.sh install          # arranca el servicio (auto-start al login)
+./scripts/launchd.sh status           # PID + último exit
+./scripts/launchd.sh logs             # tail -f logs/automation.log
+./scripts/launchd.sh restart          # tras cambios de código
+./scripts/launchd.sh uninstall        # parar y quitar del autostart
 ```
+**Prerequisito único:** `STUDIO_JWT_COOKIE` fresco en `.env` (DevTools → Cookies → `seedtag_jwt` en studio.seedtag.com con el bot logueado). El sidecar `.studio_jwt` lo mantiene fresco después.
 
-## Cómo arrancar (manual, sin launchd)
-```bash
-cd csv-automation
-source venv/bin/activate
-python3 src/main.py
-```
+## Estado verificado el 2026-05-27 (burn-in en curso)
+Ejecutar `python3 scripts/preflight.py` para revalidar.
+- ✅ Flujo completo end-to-end funcionando (Studio COMPLETED en ~20-30s con `ctv-base`).
+- ✅ QR skip, multi-mp4, threading Slack, reactivar, recompresión >150MB, retry name-exists.
+- ✅ launchd sobrevivió sleep nocturno (auto-restart al login).
+- ✅ Repo sincronizado en `github.com/sebastianpacheco-ctv/csv_automation`.
 
-## Cómo arrancar con launchd (modo burn-in 24/7 en macOS)
-El plist está en `deploy/launchd/com.seedtag.csv-automation.plist`.
-
-```bash
-# Instalar: copiar al directorio de LaunchAgents y cargar
-cp deploy/launchd/com.seedtag.csv-automation.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
-
-# Estado
-launchctl list | grep csv-automation
-# Output: PID Status com.seedtag.csv-automation
-# Si PID es "-", el proceso no está corriendo (ver logs/launchd-stderr.log).
-
-# Logs del proceso supervisado (lo que escribe el bot)
-tail -f logs/automation.log
-
-# Logs de launchd (stdout/stderr del proceso, útiles cuando crashea)
-tail -f logs/launchd-stderr.log
-
-# Parar / desinstalar
-launchctl unload ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
-# (Para desinstalar definitivamente: rm también el archivo de ~/Library/LaunchAgents/)
-
-# Recargar tras cambios en el plist
-launchctl unload ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
-cp deploy/launchd/com.seedtag.csv-automation.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.seedtag.csv-automation.plist
-```
-
-**Características del plist:**
+### Características del plist launchd
 - `RunAtLoad: true` → arranca al hacer login en la Mac.
 - `KeepAlive { Crashed: true, SuccessfulExit: false }` → auto-restart si crashea, no si sale limpio.
 - `ThrottleInterval: 30` → no relanza más rápido que cada 30s (protege contra crash-loops).
-- `ProcessType: Background` → menos prioridad de CPU, no bloquea la UI.
+- `ProcessType: Background` + `EnvironmentVariables.PATH` con `/opt/homebrew/bin` (para ffmpeg/ffprobe, que launchd no hereda del shell).
+- **Rutas hardcodeadas:** el plist usa `/Users/sebastianpacheco/csv-automation/...`. En otro Mac, sustituir antes de copiar.
+- Logs del proceso: `logs/automation.log` (rota a 10MB×5). stderr de launchd: `logs/launchd-stderr.log`.
 
-**Rutas hardcodeadas:** el plist tiene `/Users/sebastianpacheco/csv-automation/...`. Si lo usa otro Mac, sustituir esa ruta en el plist antes de copiarlo.
-
-## Cómo detener
+### Arranque manual (sin launchd, para debug)
 ```bash
-pkill -f "main.py"
+cd csv-automation && source venv/bin/activate && python3 src/main.py
 ```
 
-## Logs
-```bash
-tail -f ./logs/automation.log
-```
-
-## Test aislado del flujo de Studio
-Para probar el flujo nuevo de Studio sin tocar Jira ni Filestage:
+### Test aislado del flujo de Studio
 ```bash
 export STUDIO_JWT_COOKIE='eyJ...'
 python3 src/test_real_ticket.py
 ```
-Descarga el adjunto de SDS-21631, lo convierte, lo sube a Studio bajo el bot, y crea el creative. Idempotente vía `tmp/SDS-21631/.studio_video_id` (re-ejecuciones saltan el upload si ya existe).
+Descarga el adjunto de SDS-21631, convierte, sube a Studio bajo el bot, crea el creative. Idempotente vía `tmp/SDS-21631/.studio_video_id`.
+
+## Sidecars en TMP_DIR
+`TMP_DIR` apunta a `/Users/sebastianpacheco/Documents/CSV_automations/tmp/` (fuera del repo). Sidecars que mantiene el bot:
+- `.studio_jwt` — JWT del bot (chmod 600), se refresca tras cada call.
+- `.seen_tickets.json` — claves de tickets ya procesados (evita re-spam al reiniciar).
+- `.canceled_tickets.json` — tickets cancelados con `no` (reactivables).
+- `.pending_studio.json` — videos esperando COMPLETED (segunda pasada).
+- `.last_tmp_check` — timestamp del último aviso de carpetas viejas (>30 días).
+- `<TICKET>/.studio_video_id` — idempotencia del upload por ticket.

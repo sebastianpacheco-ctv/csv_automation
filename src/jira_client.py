@@ -238,50 +238,139 @@ class JiraClient:
         return None
 
     def _handle_transfer_link(self, url: str, dest_dir: Path) -> Path | None:
-        """
-        Intenta descargar desde servicios de transferencia.
-        - Google Drive: convierte link de vista a link de descarga directa
-        - WeTransfer: intenta descarga directa
-        - Otros: intenta descarga directa
+        """Intenta descargar desde servicios de transferencia.
+        Soporta Google Drive y WeTransfer (los mas comunes segun el equipo),
+        Dropbox, y descarga directa para el resto. Devuelve None si no se
+        pudo (entonces el orquestador avisa para descarga manual).
         """
         log.info(f"Intentando descarga desde servicio externo: {url}")
-
-        # Google Drive — convertir a link de descarga directa
-        if "drive.google.com" in url:
-            import re
-            match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
-            if match:
-                file_id = match.group(1)
-                url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-                log.info(f"Google Drive → descarga directa: {url}")
-
         try:
-            session = requests.Session()
-            r = session.get(url, stream=True, timeout=60, allow_redirects=True)
-
-            # Verificar que es un video por Content-Type
-            content_type = r.headers.get("Content-Type", "")
-            if "video" in content_type or "octet-stream" in content_type:
-                cd = r.headers.get("Content-Disposition", "")
-                if "filename=" in cd:
-                    name = cd.split("filename=")[-1].strip('"').strip("'").strip()
-                else:
-                    name = "video_from_link.mp4"
-                dest = dest_dir / name
-                with open(dest, "wb") as f:
-                    for chunk in r.iter_content(8192):
-                        f.write(chunk)
-                log.info(f"Descarga OK: {dest} ({dest.stat().st_size/1024/1024:.1f} MB)")
-                return dest
-            else:
-                log.warning(
-                    f"Link no descargable directamente ({content_type}). "
-                    f"Requiere accion manual: {url}"
-                )
-                return None
+            if "drive.google.com" in url or "drive.usercontent.google.com" in url:
+                return self._download_gdrive(url, dest_dir)
+            if "we.tl" in url or "wetransfer.com" in url:
+                return self._download_wetransfer(url, dest_dir)
+            if "dropbox.com" in url:
+                # Forzar descarga directa: dl=1
+                dl = url.replace("dl=0", "dl=1")
+                if "dl=1" not in dl:
+                    dl += ("&" if "?" in dl else "?") + "dl=1"
+                return self._stream_to_file(dl, dest_dir)
+            # Resto: intento directo
+            return self._stream_to_file(url, dest_dir)
         except Exception as e:
             log.warning(f"No se pudo descargar desde {url}: {e}")
             return None
+
+    def _stream_to_file(self, url: str, dest_dir: Path, session=None,
+                         fallback_name: str = "video_from_link.mp4") -> Path | None:
+        """Descarga una URL a disco si el Content-Type es video/binario."""
+        session = session or requests.Session()
+        r = session.get(url, stream=True, timeout=120, allow_redirects=True)
+        ct = r.headers.get("Content-Type", "")
+        if not ("video" in ct or "octet-stream" in ct or "application/" in ct):
+            log.warning(f"Link no descargable directamente ({ct}): {url[:120]}")
+            return None
+        cd = r.headers.get("Content-Disposition", "")
+        name = fallback_name
+        if "filename=" in cd:
+            name = cd.split("filename=")[-1].strip('"').strip("'").strip()
+            # filename*=UTF-8'' style
+            if name.lower().startswith("utf-8''"):
+                from urllib.parse import unquote
+                name = unquote(name[7:])
+        dest = dest_dir / name
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+        log.info(f"Descarga OK: {dest.name} ({dest.stat().st_size/1024/1024:.1f} MB)")
+        return dest
+
+    def _download_gdrive(self, url: str, dest_dir: Path) -> Path | None:
+        """Google Drive: extrae el file_id de cualquier formato de URL y baja
+        via drive.usercontent.google.com, manejando el token de confirmacion
+        de archivos grandes. Requiere que el archivo este compartido
+        'cualquiera con el link'; si es restringido, devuelve None.
+        """
+        import re
+        m = (re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+             or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url))
+        if not m:
+            log.warning(f"Google Drive: no pude extraer file_id de {url}")
+            return None
+        file_id = m.group(1)
+        session = requests.Session()
+        dl_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+        r = session.get(dl_url, stream=True, timeout=120, allow_redirects=True)
+        ct = r.headers.get("Content-Type", "")
+        # Si Drive devuelve HTML, es la pagina de confirmacion o de error (acceso)
+        if "text/html" in ct:
+            body = r.text
+            # Buscar el form de confirmacion (archivos grandes)
+            token = re.search(r'name="confirm"\s+value="([^"]+)"', body)
+            uuid = re.search(r'name="uuid"\s+value="([^"]+)"', body)
+            if token:
+                params = {"id": file_id, "export": "download", "confirm": token.group(1)}
+                if uuid:
+                    params["uuid"] = uuid.group(1)
+                r = session.get("https://drive.usercontent.google.com/download",
+                                params=params, stream=True, timeout=120)
+                ct = r.headers.get("Content-Type", "")
+            if "text/html" in ct:
+                log.warning(f"Google Drive: el archivo {file_id} no es accesible "
+                            f"(restringido o requiere login). Descarga manual.")
+                return None
+        cd = r.headers.get("Content-Disposition", "")
+        name = "gdrive_video.mp4"
+        if "filename=" in cd:
+            name = cd.split("filename=")[-1].strip('"').strip("'").strip()
+            if name.lower().startswith("utf-8''"):
+                from urllib.parse import unquote
+                name = unquote(name[7:])
+        dest = dest_dir / name
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(8192):
+                f.write(chunk)
+        log.info(f"Google Drive: descargado {dest.name} ({dest.stat().st_size/1024/1024:.1f} MB)")
+        return dest
+
+    def _download_wetransfer(self, url: str, dest_dir: Path) -> Path | None:
+        """WeTransfer: resuelve la URL de descarga directa via su API interna.
+        we.tl/... redirige a wetransfer.com/downloads/<transfer_id>/<security_hash>.
+        Hay que pedir un CSRF token y POST a /api/v4/transfers/.../download.
+        Fragil (depende de la API no documentada); si cambia, devuelve None.
+        """
+        import re
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0 Safari/537.36",
+            "x-requested-with": "XMLHttpRequest",
+        })
+        # Resolver short link we.tl → URL completa
+        r0 = session.get(url, allow_redirects=True, timeout=30)
+        final = r0.url
+        m = re.search(r"wetransfer\.com/downloads/([a-zA-Z0-9]+)/([a-zA-Z0-9]+)", final)
+        if not m:
+            log.warning(f"WeTransfer: formato de URL inesperado: {final}")
+            return None
+        transfer_id, security_hash = m.group(1), m.group(2)
+        # CSRF token del meta tag
+        csrf = re.search(r'name="csrf-token"\s+content="([^"]+)"', r0.text)
+        if csrf:
+            session.headers["x-csrf-token"] = csrf.group(1)
+        api = f"https://wetransfer.com/api/v4/transfers/{transfer_id}/download"
+        resp = session.post(api, json={"security_hash": security_hash,
+                                       "intent": "entire_transfer"}, timeout=30)
+        if resp.status_code != 200:
+            log.warning(f"WeTransfer: API download fallo HTTP {resp.status_code}")
+            return None
+        direct = resp.json().get("direct_link")
+        if not direct:
+            log.warning("WeTransfer: la API no devolvio direct_link")
+            return None
+        # El direct_link suele ser un .zip si hay varios archivos, o el archivo directo
+        return self._stream_to_file(direct, dest_dir, session=session,
+                                    fallback_name="wetransfer_video.mp4")
 
     def _download_url(self, url: str, dest: Path) -> Path:
         is_jira = self.base_url in url
@@ -295,12 +384,35 @@ class JiraClient:
         return dest
 
     def _extract_text(self, node) -> str:
+        """Extrae texto de un nodo ADF, incluyendo URLs de Smart Links.
+        Cuando pegas un link de Drive/WeTransfer en Jira, se convierte en
+        Smart Link: la URL queda en attrs.url (inlineCard/embedCard/blockCard)
+        o en un link mark (marks[].attrs.href), NO en un nodo de texto. Hay
+        que recolectar esas URLs ademas del texto plano.
+        """
         if isinstance(node, str):
             return node
         if isinstance(node, dict):
-            if node.get("type") == "text":
-                return node.get("text", "")
-            return " ".join(self._extract_text(c) for c in node.get("content", []))
+            ntype = node.get("type")
+            parts = []
+            if ntype == "text":
+                parts.append(node.get("text", ""))
+                # URL dentro de un link mark
+                for mark in node.get("marks", []) or []:
+                    if mark.get("type") == "link":
+                        href = (mark.get("attrs") or {}).get("href", "")
+                        if href:
+                            parts.append(href)
+            elif ntype in ("inlineCard", "blockCard", "embedCard"):
+                # Smart Link: la URL real esta en attrs.url
+                attrs = node.get("attrs") or {}
+                url = attrs.get("url") or ""
+                if url:
+                    parts.append(url)
+            # Recursion sobre hijos
+            for c in node.get("content", []) or []:
+                parts.append(self._extract_text(c))
+            return " ".join(p for p in parts if p)
         return ""
 
     def attach_file(self, ticket_key: str, file_path: Path):

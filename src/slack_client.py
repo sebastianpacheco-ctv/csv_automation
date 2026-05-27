@@ -207,7 +207,8 @@ class SlackClient:
                         log.info(f"Respuesta ok en hilo: {text!r}")
                         return {"action": "ok"}
 
-                # status callback igual que en wait_for_confirmation
+                # status callback: si alguien escribe "status" en el canal,
+                # responde con el resumen de la cola en un hilo aparte.
                 if self.status_callback:
                     try:
                         history = self.client.conversations_history(
@@ -231,68 +232,6 @@ class SlackClient:
                 log.warning(f"Error leyendo hilo: {e}")
             time.sleep(poll_interval)
         return None
-
-    def wait_for_confirmation(self, channel: str, message_ts: str,
-                              timeout: int = 3600, poll_interval: int = 15) -> bool:
-        """
-        Espera a que alguien responda "ok" en el hilo del mensaje.
-        SOLO lee mensajes del canal autorizado (ALLOWED_CHANNEL).
-        Aunque el bot sea añadido a otro canal, ignorará cualquier mensaje
-        que no venga de ALLOWED_CHANNEL.
-        """
-        # ── RESTRICCION DE SEGURIDAD ─────────────────────────────────────
-        # El bot SOLO procesa mensajes del canal autorizado
-        if channel != self.channel_id:
-            log.warning(f"Intento de leer canal no autorizado: {channel}. Ignorado.")
-            return False
-        # ─────────────────────────────────────────────────────────────────
-
-        deadline = time.time() + timeout
-        CONFIRM_WORDS = {"ok", "si", "sí", "yes", "dale", "adelante", "procesar", "go"}
-        STATUS_WORDS = {"status", "estado", "queue", "cola"}
-        log.info(f"Esperando 'ok' en hilo del canal autorizado #{self.channel}...")
-
-        while time.time() < deadline:
-            try:
-                # Verificar confirmacion en el hilo
-                r = self.client.conversations_replies(
-                    channel=self.channel_id,
-                    ts=message_ts,
-                    limit=20
-                )
-                messages = r.get("messages", [])
-                for msg in messages[1:]:
-                    text = msg.get("text", "").strip().lower()
-                    if any(word in text for word in CONFIRM_WORDS):
-                        user = msg.get("user", "alguien")
-                        log.info(f"✅ Confirmacion recibida de {user}: \'{text}\'")
-                        return True
-
-                # Verificar comando "status" en el canal mientras espera
-                if self.status_callback:
-                    try:
-                        history = self.client.conversations_history(
-                            channel=self.channel_id, limit=5
-                        )
-                        for hmsg in history.get("messages", []):
-                            hmsg_text = hmsg.get("text", "").strip().lower()
-                            hmsg_ts = hmsg.get("ts", "")
-                            hmsg_bot = hmsg.get("bot_id", "")
-                            if hmsg_text == "status" and not hmsg_bot and hmsg_ts not in self._seen_status:
-                                self._seen_status.add(hmsg_ts)
-                                status_text = self.status_callback()
-                                self.client.chat_postMessage(
-                                    channel=self.channel_id,
-                                    text=status_text,
-                                    thread_ts=hmsg_ts
-                                )
-                    except Exception as e:
-                        log.warning(f"Error leyendo status durante espera: {e}")
-
-            except SlackApiError as e:
-                log.warning(f"Error leyendo hilo: {e}")
-            time.sleep(poll_interval)
-        return False
 
     def _get_channel_id(self, channel_name: str) -> str:
         """Obtiene el ID del canal autorizado por nombre."""

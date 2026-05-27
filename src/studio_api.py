@@ -321,10 +321,6 @@ class StudioAPIClient:
         """
         return self.ping()
 
-    def get_dimensions(self) -> dict:
-        """Devuelve los valores válidos de country, category, configuration, agency."""
-        return self._graphql(Q_GET_CREATIVE_DIMENSIONS)["getCreativeDimensions"]
-
     # ── CSV-CTV: factory + orquestación ────────────────────────────────────
 
     @staticmethod
@@ -687,32 +683,6 @@ class StudioAPIClient:
     def get_preview_link(self, creative_id: str) -> str:
         """Devuelve el link público de preview del creative."""
         return f"{PREVIEW_BASE}/{creative_id}"
-
-    # ── Introspection ──────────────────────────────────────────────────────
-
-    def introspect_input_type(self, type_name: str) -> dict:
-        """
-        Pide al servidor la definición exacta de un InputType (sus campos y tipos).
-        Útil para confirmar AdTemplateInputType y CreativeModelInputType.
-        """
-        query = """
-        query IntrospectType($name: String!) {
-          __type(name: $name) {
-            name
-            kind
-            inputFields {
-              name
-              type {
-                name
-                kind
-                ofType { name kind ofType { name kind } }
-              }
-              defaultValue
-            }
-          }
-        }
-        """
-        return self._graphql(query, {"name": type_name})["__type"]
 
     # ── Mapeos ────────────────────────────────────────────────────────────
 

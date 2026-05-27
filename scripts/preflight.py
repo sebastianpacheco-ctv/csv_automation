@@ -24,20 +24,28 @@ load_dotenv(ROOT / ".env")
 
 OK = "\033[32m✓\033[0m"
 FAIL = "\033[31m✗\033[0m"
+WARN = "\033[33m!\033[0m"
 
 errors = 0
+warnings = 0
 
 
-def check(name, fn):
-    global errors
+def check(name, fn, gating=True):
+    """Corre un chequeo. Si `gating=False`, un fallo se muestra como warning
+    amarillo pero NO bloquea el arranque (no suma a `errors`). Se usa para
+    dependencias que ya no están en el flujo (p.ej. Filestage)."""
+    global errors, warnings
     try:
         ok, detail = fn()
     except Exception as e:
         ok, detail = False, f"excepcion: {type(e).__name__}: {e}"
-    sigil = OK if ok else FAIL
+    sigil = OK if ok else (FAIL if gating else WARN)
     print(f"  {sigil} {name}" + (f"  —  {detail}" if detail else ""))
     if not ok:
-        errors += 1
+        if gating:
+            errors += 1
+        else:
+            warnings += 1
 
 
 print("\n=== PRE-FLIGHT CSV AUTOMATION ===\n")
@@ -54,17 +62,22 @@ def check_deps():
     import requests  # noqa: F401
     import slack_sdk  # noqa: F401
     import dotenv  # noqa: F401
-    # Playwright es opcional en GCP (cuando reemplacemos Filestage por GCS)
-    # pero en local sigue siendo crítico para renovar la cookie.
-    import playwright  # noqa: F401
-    return True, "requests, slack_sdk, dotenv, playwright"
+    # Playwright solo se usaba para renovar la cookie de Filestage, que ya está
+    # fuera del flujo. Ya no es crítico; si falta, no bloquea el burn-in.
+    base = "requests, slack_sdk, dotenv"
+    try:
+        import playwright  # noqa: F401
+        return True, base + ", playwright"
+    except ImportError:
+        return True, base + " (playwright no instalado — OK, Filestage fuera del flujo)"
 
 
 def check_env():
+    # FILESTAGE_SESSION_COOKIE ya NO es requerida: Filestage está fuera del
+    # flujo. Su cookie caduca con la sesión del navegador; no debe bloquear.
     needed = [
         "JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY",
         "SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID",
-        "FILESTAGE_SESSION_COOKIE",
         "STUDIO_JWT_COOKIE",
     ]
     missing = [k for k in needed if not os.getenv(k) or os.getenv(k) == "..."]
@@ -103,7 +116,7 @@ def check_filestage():
         except Exception:
             n = "?"
         return True, f"HTTP 200, {n} folders accesibles"
-    return False, f"HTTP {r.status_code} — renovar cookie desde DevTools"
+    return False, f"HTTP {r.status_code} — cookie caducada (ignorable, fuera del flujo)"
 
 
 def check_studio():
@@ -144,7 +157,7 @@ check("ffmpeg disponible", check_ffmpeg)
 check("Python deps", check_deps)
 check(".env completo", check_env)
 check("Slack bot autenticado", check_slack)
-check("Filestage cookie valida", check_filestage)
+check("Filestage cookie (informativo, fuera del flujo)", check_filestage, gating=False)
 check("Studio JWT bajo el bot", check_studio)
 check("Jira polling + customfields", check_jira)
 
@@ -152,6 +165,10 @@ print()
 if errors:
     print(f"\033[31m{errors} fallo(s). Resuelve antes de cargar launchd.\033[0m\n")
     sys.exit(1)
-print("\033[32mTodo verde. Listo para arrancar burn-in:\033[0m")
+if warnings:
+    print(f"\033[33m{warnings} warning(s) no bloqueante(s) (fuera del flujo, ignorable). "
+          f"Listo para arrancar burn-in:\033[0m")
+else:
+    print("\033[32mTodo verde. Listo para arrancar burn-in:\033[0m")
 print("  ./scripts/launchd.sh install\n")
 sys.exit(0)

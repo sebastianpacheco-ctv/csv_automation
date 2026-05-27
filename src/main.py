@@ -808,7 +808,8 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                     attach_skip = f"HTTP {att_err.response.status_code} — {att_err.response.text[:200]}"
                 else:
                     attach_skip = f"{type(att_err).__name__}: {att_err}"
-                post_thread(f"{lbl}⚠️ Error al adjuntar `{out.name}`: `{attach_skip}`")
+                post_thread(f"{lbl}⚠️ Error al adjuntar `{out.name}` "
+                            f"(*{size_mb:.1f} MB*): `{attach_skip}`")
         res["attach_skip_reason"] = attach_skip
 
         # ── GCS (opcional, inerte si gcs es None) ─────────────────────────

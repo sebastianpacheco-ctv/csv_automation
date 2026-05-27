@@ -20,6 +20,7 @@ import sys
 import json
 import time
 import base64
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -31,6 +32,7 @@ sys.path.insert(0, str(ROOT / "src"))
 load_dotenv(ROOT / ".env")
 
 from jira_client import JiraClient          # noqa: E402
+from studio_api import StudioAPIClient      # noqa: E402
 import main as bot                          # noqa: E402  (seguro: main usa __main__ guard)
 
 # main.py configura logging (RotatingFileHandler sobre automation.log) al
@@ -55,6 +57,7 @@ STATUS_PATH = TMP / ".bot_status.json"
 CONTROL_PATH = TMP / ".bot_control.json"
 JWT_PATH = TMP / ".studio_jwt"
 POLL = getattr(bot, "POLL_INTERVAL", 60)
+LAUNCHD = ROOT / "scripts" / "launchd.sh"
 
 VALID_ACTIONS = {"reprocess", "cancel", "reactivate", "pause", "resume"}
 
@@ -238,6 +241,90 @@ def api_command():
                     "note": f"el bot lo aplica en su próximo loop (≤{POLL}s)"})
 
 
+def _run_launchd(verb: str) -> dict:
+    try:
+        r = subprocess.run(["bash", str(LAUNCHD), verb], cwd=str(ROOT),
+                           capture_output=True, text=True, timeout=60)
+        return {"ok": r.returncode == 0, "out": (r.stdout + r.stderr).strip()[-400:]}
+    except Exception as e:
+        return {"ok": False, "out": str(e)}
+
+
+@app.post("/api/restart")
+def api_restart():
+    res = _run_launchd("restart")
+    return jsonify(res), (200 if res["ok"] else 500)
+
+
+@app.post("/api/jwt")
+def api_jwt():
+    """Renueva el JWT de Studio: valida el token, lo guarda en el sidecar
+    (.studio_jwt, que tiene preferencia) y reinicia el bot para que lo tome."""
+    body = request.get_json(force=True, silent=True) or {}
+    token = (body.get("token") or "").strip()
+    if token.lower().startswith("seedtag_jwt="):
+        token = token.split("=", 1)[1].strip()
+    if token.count(".") < 2:
+        return jsonify({"ok": False, "error": "no parece un JWT (faltan los 3 segmentos)"}), 400
+    days = _jwt_days_left(token)
+    if days is None:
+        return jsonify({"ok": False, "error": "no pude decodificar el exp del JWT"}), 400
+    if days <= 0:
+        return jsonify({"ok": False, "error": f"ese JWT ya está caducado"}), 400
+    try:
+        JWT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        JWT_PATH.write_text(token)
+        os.chmod(JWT_PATH, 0o600)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"no pude guardar el sidecar: {e}"}), 500
+    restart = _run_launchd("restart")
+    return jsonify({"ok": True, "days": days, "restarted": restart["ok"],
+                    "note": f"JWT guardado (caduca en {days} d)" +
+                            (" y bot reiniciado" if restart["ok"] else " — reiniciá el bot a mano")})
+
+
+@app.get("/api/health")
+def api_health():
+    """Health checks en vivo: ffmpeg, Slack, Jira, Studio, JWT."""
+    checks = []
+
+    def add(name, ok, detail):
+        checks.append({"name": name, "ok": bool(ok), "detail": str(detail)[:80]})
+
+    try:
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10)
+        add("ffmpeg", r.returncode == 0,
+            (r.stdout.splitlines() or ["?"])[0] if r.returncode == 0 else "no en PATH")
+    except Exception as e:
+        add("ffmpeg", False, e)
+    try:
+        import ssl, certifi
+        from slack_sdk import WebClient
+        a = WebClient(token=os.getenv("SLACK_BOT_TOKEN"),
+                      ssl=ssl.create_default_context(cafile=certifi.where())).auth_test()
+        add("Slack", a.get("ok"), f"@{a.get('user', '?')}")
+    except Exception as e:
+        add("Slack", False, e)
+    try:
+        import requests as _rq
+        r = _rq.get(f"{os.getenv('JIRA_BASE_URL')}/rest/api/3/myself",
+                    auth=(os.getenv("JIRA_EMAIL"), os.getenv("JIRA_API_TOKEN")),
+                    headers={"Accept": "application/json"}, timeout=15)
+        add("Jira", r.status_code == 200,
+            r.json().get("emailAddress", "ok") if r.status_code == 200 else f"HTTP {r.status_code}")
+    except Exception as e:
+        add("Jira", False, e)
+    try:
+        jwt = _read_text(JWT_PATH) or os.getenv("STUDIO_JWT_COOKIE")
+        u = StudioAPIClient(jwt_cookie=jwt, sidecar_path=None).ping()
+        add("Studio", True, u.get("email", "ok"))
+    except Exception as e:
+        add("Studio", False, e)
+    d = _jwt_days_left(_read_text(JWT_PATH))
+    add("JWT Studio", d is not None and d > 2, f"{d} d" if d is not None else "?")
+    return jsonify({"checks": checks, "now": datetime.now(timezone.utc).isoformat()})
+
+
 @app.get("/")
 def index():
     return HTML
@@ -306,6 +393,20 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <h2>Mantenimiento</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <button class="btn btn-dark" onclick="restartBot()">↻ Reiniciar bot</button>
+      <button class="btn btn-ghost" onclick="runHealth()">🩺 Health checks</button>
+      <span id="health" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span>
+    </div>
+    <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <textarea id="jwt" placeholder="Pegá el JWT nuevo de Studio (seedtag_jwt de DevTools → Cookies)…"
+        style="flex:1;min-width:300px;height:58px;border:1px solid var(--g1);border-radius:9px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical"></textarea>
+      <button class="btn btn-coral" onclick="renewJwt()">Renovar JWT + reiniciar</button>
+    </div>
+  </div>
 
   <div class="panel">
     <h2>Cola 1597 — Video Operations</h2>
@@ -390,6 +491,27 @@ async function cmd(action,key){
   setTimeout(refresh,600);
 }
 function togglePause(){ cmd(STATE&&STATE.bot.paused?'resume':'pause',''); }
+async function restartBot(){
+  if(!confirm('¿Reiniciar el bot? Solo hacelo si no hay un ticket procesándose ahora.'))return;
+  toast('reiniciando bot…');
+  const r=await fetch('/api/restart',{method:'POST'}); const j=await r.json();
+  toast(j.ok?'✓ bot reiniciado':'✗ '+(j.out||'error')); setTimeout(refresh,3500);
+}
+async function runHealth(){
+  const h=document.getElementById('health'); h.innerHTML='<span class="muted">chequeando…</span>';
+  try{ const r=await fetch('/api/health'); const j=await r.json();
+    h.innerHTML=j.checks.map(c=>`<span class="badge ${c.ok?'b-csv':'b-cancel'}" title="${(c.detail||'').replace(/"/g,'&quot;')}">${c.ok?'✓':'✗'} ${c.name}</span>`).join('');
+  }catch(e){ h.innerHTML='<span class="badge b-cancel">✗ error</span>'; }
+}
+async function renewJwt(){
+  const t=document.getElementById('jwt').value.trim();
+  if(!t){toast('pegá el JWT primero');return;}
+  toast('guardando JWT…');
+  const r=await fetch('/api/jwt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t})});
+  const j=await r.json();
+  toast(j.ok?('✓ '+j.note):'✗ '+j.error);
+  if(j.ok){ document.getElementById('jwt').value=''; setTimeout(refresh,3500); }
+}
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),3200); }
 refresh(); setInterval(refresh,5000);

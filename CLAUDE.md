@@ -347,5 +347,6 @@ python3 src/dashboard.py        # → http://127.0.0.1:8787 (DASHBOARD_HOST/PORT
 ```
 - **Ve:** estado del bot (vivo/pausado, PID, último poll), cola 1597 en vivo, sidecars (seen/canceled/pending_studio), salud del JWT de Studio, tail del log.
 - **Controla:** reprocesar / cancelar / reactivar un ticket, pausar/reanudar el polling. Escribe en `.bot_control.json`; el bot lo aplica en su próximo loop (≤60s).
+- **Mantenimiento (Tanda 1):** **renovar el JWT de Studio** (pegar token → escribe `.studio_jwt` + reinicia el bot), **Reiniciar bot** (`POST /api/restart` → `launchd.sh restart`), **Health checks** (`GET /api/health`: ffmpeg/Slack/Jira/Studio/JWT en verde-rojo).
 - **Acoplamiento solo por archivos** (control + status). Si el dashboard no corre, el bot funciona igual. El dashboard limpia sus propios handlers de logging al importar `main` para no rotar el log del bot.
-- **Pendiente (v2):** aprobar/rechazar desde el dashboard (postear `ok`/`no` al hilo de Slack) + ver/editar config. En GCP: mismo archivo detrás de gunicorn + auth (IAP).
+- **Pendiente (Tanda 2):** troubleshooting de tickets (historial + fallidos con motivo + reintentar) y heartbeat/actividad en vivo (requieren que el bot emita más estado). **Tanda 3:** disco/limpieza, editar config, aprobar/rechazar desde el panel. En GCP: mismo archivo detrás de gunicorn + auth (IAP).

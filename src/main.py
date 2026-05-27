@@ -467,6 +467,85 @@ def _format_deadline(deadline_raw: str) -> str:
     return deadline_raw[:10]
 
 
+def _handle_qr_skip(ticket_key: str, ticket_url: str,
+                    jira: JiraClient, slack: SlackClient) -> bool:
+    """QR check. Si el ticket trae un link en el field 'Advertiser's website
+    for QR' de la form, el bot NO procesa el video. Solo:
+      1. Transiciona Triage → To Build via 'Send to Operations' (para que el
+         ticket no se quede en Triage y el equipo lo vea en la columna correcta).
+      2. Postea aviso en Slack para que un humano genere el QR + creative.
+    NO descarga, NO convierte, NO sube a Studio, NO adjunta, NO comenta.
+
+    El field NO es un customfield de Jira; vive dentro de Atlassian Forms y
+    solo se accede via forms.cloud (ver JiraClient.get_form_answers).
+
+    Devuelve True si el ticket fue saltado por QR (el caller debe `return`),
+    False si no hay QR y el procesado normal debe continuar.
+    """
+    try:
+        form_answers = jira.get_form_answers(ticket_key)
+    except Exception as e:
+        log.warning(f"{ticket_key}: error leyendo forms: {e}")
+        form_answers = {}
+    qr_url = ""
+    qr_label = ""
+    for label, value in form_answers.items():
+        if "advertiser" in label.lower() and "qr" in label.lower():
+            qr_url = value.strip()
+            qr_label = label
+            break
+    if not qr_url:
+        return False
+
+    # Transicionar Triage -> To Build
+    try:
+        transitions = jira.get_transitions(ticket_key)
+        if "Send to Operations" in transitions:
+            jira.transition(ticket_key, transitions["Send to Operations"])
+            log.info(f"{ticket_key} (QR) → To Build")
+        else:
+            log.warning(f"{ticket_key} (QR): sin 'Send to Operations'. "
+                        f"Disponibles: {list(transitions.keys())}")
+    except Exception as e:
+        log.warning(f"{ticket_key} (QR): no se pudo mover a To Build: {e}")
+
+    slack.send_message(
+        f"🔲 *{ticket_key}* tiene QR (campo '{qr_label}').\n"
+        f"URL: {qr_url[:200]}\n"
+        f"*El bot NO procesa el video* — hay que generar el QR e incluirlo "
+        f"manualmente. Ticket movido a To Build.\n"
+        f"<{ticket_url}|Ver en Jira>"
+    )
+    log.info(f"{ticket_key}: skip procesado por QR ({qr_url[:80]})")
+    return True
+
+
+def _build_video_plans(video_paths: list, canonical_stem: str,
+                       converter: VideoConverter, ticket_key: str) -> list[dict]:
+    """Construye el plan por video que se muestra en Slack y se itera al
+    procesar. Por cada video: nombre canonico (con _Vn si hay varios),
+    duracion, bitrate default y tamanyo estimado. Si no se puede medir un
+    archivo, deja duration/bitrate/estimated en None (el plan igual se muestra).
+    """
+    multi = len(video_paths) > 1
+    video_plans = []
+    for i, vp in enumerate(video_paths, start=1):
+        cname = f"{canonical_stem}_V{i}" if multi else canonical_stem
+        try:
+            dur = converter.get_duration(vp)
+            br = (converter.bitrate_short if dur <= converter.duration_threshold
+                  else converter.bitrate_long)
+            est = (br + 0.256) * dur / 8
+        except Exception as e:
+            log.warning(f"{ticket_key}: no se pudo medir {vp.name} ({e})")
+            dur, br, est = None, None, None
+        video_plans.append({
+            "path": vp, "canonical": cname,
+            "duration_s": dur, "bitrate_mbps": br, "estimated_size_mb": est,
+        })
+    return video_plans
+
+
 # ── Proceso de un ticket ──────────────────────────────────────────────────────
 
 def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
@@ -488,48 +567,8 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
 
-    # ── 0. QR check: si el ticket trae un link en el field "Advertiser's
-    # website for QR" de la form, el bot NO procesa el video. Solo:
-    #   1. Transiciona Triage → To Build via 'Send to Operations' (para que
-    #      el ticket no se quede en Triage y el equipo lo vea en columna
-    #      correcta).
-    #   2. Postea aviso en Slack para que un humano genere el QR + creative.
-    # NO descarga, NO convierte, NO sube a Studio, NO adjunta, NO comenta.
-    # Nota: el field NO es un customfield de Jira; vive dentro de Atlassian
-    # Forms y solo se accede via forms.cloud (ver JiraClient.get_form_answers).
-    try:
-        form_answers = jira.get_form_answers(ticket_key)
-    except Exception as e:
-        log.warning(f"{ticket_key}: error leyendo forms: {e}")
-        form_answers = {}
-    qr_url = ""
-    qr_label = ""
-    for label, value in form_answers.items():
-        if "advertiser" in label.lower() and "qr" in label.lower():
-            qr_url = value.strip()
-            qr_label = label
-            break
-    if qr_url:
-        # Transicionar Triage -> To Build
-        try:
-            transitions = jira.get_transitions(ticket_key)
-            if "Send to Operations" in transitions:
-                jira.transition(ticket_key, transitions["Send to Operations"])
-                log.info(f"{ticket_key} (QR) → To Build")
-            else:
-                log.warning(f"{ticket_key} (QR): sin 'Send to Operations'. "
-                            f"Disponibles: {list(transitions.keys())}")
-        except Exception as e:
-            log.warning(f"{ticket_key} (QR): no se pudo mover a To Build: {e}")
-
-        slack.send_message(
-            f"🔲 *{ticket_key}* tiene QR (campo '{qr_label}').\n"
-            f"URL: {qr_url[:200]}\n"
-            f"*El bot NO procesa el video* — hay que generar el QR e incluirlo "
-            f"manualmente. Ticket movido a To Build.\n"
-            f"<{ticket_url}|Ver en Jira>"
-        )
-        log.info(f"{ticket_key}: skip procesado por QR ({qr_url[:80]})")
+    # ── 0. QR check (ver _handle_qr_skip). Si hay QR, no se procesa el video.
+    if _handle_qr_skip(ticket_key, ticket_url, jira, slack):
         return
 
     # ── 1. Pre-confirmacion: descargar TODOS los videos + plan por video ──
@@ -553,24 +592,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         return
 
     canonical_stem = _build_canonical_filename(summary)
-    multi = len(video_paths) > 1
-    # Plan por video: nombre canonico (con _Vn si hay varios), duracion,
-    # bitrate default y tamanyo estimado.
-    video_plans = []
-    for i, vp in enumerate(video_paths, start=1):
-        cname = f"{canonical_stem}_V{i}" if multi else canonical_stem
-        try:
-            dur = converter.get_duration(vp)
-            br = (converter.bitrate_short if dur <= converter.duration_threshold
-                  else converter.bitrate_long)
-            est = (br + 0.256) * dur / 8
-        except Exception as e:
-            log.warning(f"{ticket_key}: no se pudo medir {vp.name} ({e})")
-            dur, br, est = None, None, None
-        video_plans.append({
-            "path": vp, "canonical": cname,
-            "duration_s": dur, "bitrate_mbps": br, "estimated_size_mb": est,
-        })
+    video_plans = _build_video_plans(video_paths, canonical_stem, converter, ticket_key)
 
     msg = slack.notify_new_ticket(
         ticket_key=ticket_key,
@@ -592,7 +614,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     def post_thread(text: str) -> None:
         slack.send_thread_message(msg["ts"], text)
 
-    # ── 2. Esperar respuesta en el hilo (ok / ok Nmbps / no) ──────────────
+    # ── 2. Esperar respuesta en el hilo (ok / no) ─────────────────────────
     response = slack.wait_for_ticket_response(msg["channel"], msg["ts"], timeout=3600)
     if response is None:
         post_thread(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
@@ -625,7 +647,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     except Exception as e:
         log.warning(f"No se pudo cambiar estado a To Build: {e}")
 
-    # ── 4-8. Procesar CADA video (1 creative por archivo) ─────────────────
+    # ── 4. Procesar CADA video (convert + Studio + attach; 1 creative c/u) ─
     # country/category son a nivel ticket (mismos para todos los videos).
     industry = (fields.get("customfield_15831") or {}).get("value", "")
     country = studio.map_country(operator_entity)

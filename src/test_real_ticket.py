@@ -25,7 +25,9 @@ from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
-from studio_api import StudioAPIClient, StudioVideoNotReadyError
+from studio_api import (
+    StudioAPIClient, StudioVideoNotReadyError, VIDEO_PIPELINE_CTV_BASE,
+)
 from converter import VideoConverter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -47,9 +49,11 @@ ATTACHMENT_ID = "343451"
 ATTACHMENT_FILENAME = "adidas Adizero EVO SL.mp4"
 OPERATOR_ENTITY = "CA"   # → 'canada' en Studio
 
-# Pipeline CTV — id del template ctv-base (hipótesis verificada empíricamente:
-# el upload arrancó con este pipeline y el procesado tarda mucho más que con legacy)
-CTV_PIPELINE_ID = "68d10800680fb2e148f30961"
+# Pipeline CTV — usar SIEMPRE el selector_name "ctv-base", NO el id hex.
+# BUG histórico: con el id hex ("68d10800680fb2e148f30961") los videos quedan
+# PROGRESSING para siempre; con el selector_name completan en ~10-30s.
+# Reutilizamos la constante de producción para que el test no pueda derivar.
+CTV_PIPELINE_ID = VIDEO_PIPELINE_CTV_BASE
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 jira_email = os.environ["JIRA_EMAIL"]

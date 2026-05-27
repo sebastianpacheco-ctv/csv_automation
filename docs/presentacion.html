@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSV CTV — Bot de automatización de creatives · Seedtag</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --coral:#FF6B7C;
+    --black:#000000;
+    --white:#FFFFFF;
+    --cream:#EBE6E4;
+    --grey-1:#D4D0CE;
+    --grey-2:#BCB8B6;
+    --grey-3:#8D8A89;
+    --grey-4:#5E5C5B;
+    --grey-5:#2F2E2E;
+    --font-sans:'Instrument Sans',sans-serif;
+    --font-serif:'Instrument Serif',serif;
+    --shadow:0 14px 44px rgba(0,0,0,.10);
+    --shadow-sm:0 4px 20px rgba(0,0,0,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--font-sans);color:var(--grey-5);background:var(--cream);
+    line-height:1.5;scroll-snap-type:y proximity;overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  .slide{
+    min-height:100vh;width:100%;display:flex;flex-direction:column;
+    justify-content:center;align-items:center;padding:7vh 6vw;
+    scroll-snap-align:start;position:relative;overflow:hidden;
+  }
+  .slide-inner{width:100%;max-width:1180px;margin:0 auto;position:relative;z-index:2}
+
+  /* backgrounds per pairing rules */
+  .bg-cream{background:var(--cream)}
+  .bg-white{background:var(--white)}
+  .bg-black{background:var(--black);color:var(--white)}
+
+  /* LENS — signature visual */
+  .lens{border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.18) 0%,rgba(255,255,255,0) 70%);
+    border:1px solid rgba(255,255,255,.16);position:absolute;pointer-events:none;z-index:1}
+  .lens-coral{background:radial-gradient(circle,rgba(255,107,124,.40) 0%,rgba(255,107,124,0) 70%);border-color:rgba(255,107,124,.18)}
+
+  /* TYPE */
+  .kicker{display:inline-block;font-size:.74rem;font-weight:700;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--coral);margin-bottom:20px}
+  h1{font-size:clamp(2.5rem,6.2vw,5rem);line-height:1.0;font-weight:700;letter-spacing:-.015em}
+  h1 .em{font-family:var(--font-serif);font-style:italic;font-weight:400;color:var(--coral)}
+  h2{font-size:clamp(1.8rem,3.8vw,3rem);font-weight:700;letter-spacing:-.015em;margin-bottom:10px;line-height:1.05}
+  h2 .em{font-family:var(--font-serif);font-style:italic;font-weight:400;color:var(--coral)}
+  h3{font-size:1.05rem;font-weight:600}
+  .lead{font-size:clamp(1.05rem,2vw,1.4rem);color:var(--grey-2);max-width:800px;margin-top:22px;font-weight:400}
+  .bg-black .lead{color:var(--grey-2)}
+  .sub{color:var(--grey-4);max-width:780px;margin-bottom:34px;font-size:1.06rem}
+  .bg-black .sub{color:var(--grey-3)}
+  .secthead{margin-bottom:28px}
+
+  /* HERO */
+  .brandrow{display:flex;align-items:center;gap:13px;margin-bottom:32px}
+  .brandrow .mark{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;
+    background:var(--coral);font-size:20px}
+  .brandrow .name{font-weight:700;font-size:1.05rem;letter-spacing:.02em}
+  .brandrow .name small{display:block;font-weight:500;color:var(--grey-3);font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;margin-top:2px}
+  .hero-badges{display:flex;gap:11px;flex-wrap:wrap;margin-top:36px}
+  .pill{display:inline-flex;align-items:center;gap:9px;background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.16);padding:9px 16px;border-radius:999px;
+    font-size:.85rem;font-weight:500;color:var(--white)}
+  .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
+
+  /* WORDMARK footer */
+  .wordmark{font-size:.82rem;font-weight:600;letter-spacing:.25em;color:var(--white)}
+  .wordmark.dark{color:var(--black)}
+  .footwrap{position:absolute;left:6vw;bottom:5vh;z-index:2;display:flex;align-items:center;gap:16px}
+  .footwrap .tagline{font-size:.82rem;color:var(--grey-3);letter-spacing:.02em}
+
+  /* CARDS */
+  .grid{display:grid;gap:20px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .card{background:var(--white);border:1px solid var(--grey-1);border-radius:20px;padding:28px;box-shadow:var(--shadow-sm)}
+  .card .ico{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:21px;margin-bottom:18px;background:var(--cream);color:var(--coral)}
+  .card h3{margin-bottom:7px;color:var(--black)}
+  .card p{color:var(--grey-4);font-size:.96rem}
+
+  /* METRICS */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+  .metric{background:var(--white);border:1px solid var(--grey-1);border-radius:18px;padding:24px;box-shadow:var(--shadow-sm)}
+  .metric .lbl{font-size:.74rem;color:var(--grey-3);font-weight:600;text-transform:uppercase;letter-spacing:.08em}
+  .metric .before{font-size:1.02rem;color:var(--grey-3);text-decoration:line-through;margin-top:12px}
+  .metric .after{font-size:1.65rem;font-weight:700;color:var(--black);margin-top:3px;line-height:1.1}
+  .metric .after span{color:var(--coral)}
+
+  /* FLOW */
+  .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .step{position:relative;background:var(--cream);border:1px solid var(--grey-1);border-radius:18px;padding:22px 18px}
+  .step .n{position:absolute;top:-14px;left:18px;width:32px;height:32px;border-radius:50%;
+    background:var(--black);color:var(--white);display:grid;place-items:center;font-weight:700;font-size:.9rem}
+  .step.human .n{background:var(--coral)}
+  .step .t{font-weight:600;margin:12px 0 5px;font-size:1.02rem;color:var(--black)}
+  .step .d{color:var(--grey-4);font-size:.88rem}
+  .step .tag{display:inline-block;margin-top:12px;font-size:.66rem;font-weight:700;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--grey-3);background:var(--white);padding:4px 10px;border-radius:999px;border:1px solid var(--grey-1)}
+  .step.human .tag{color:var(--white);background:var(--coral);border-color:var(--coral)}
+
+  /* CALLOUT (size limit) */
+  .callout{display:flex;align-items:center;gap:18px;margin-top:24px;
+    background:#fff5f6;border:1px solid rgba(255,107,124,.4);border-left:5px solid var(--coral);
+    border-radius:16px;padding:18px 24px}
+  .callout .ci{width:44px;height:44px;border-radius:50%;background:var(--coral);color:var(--white);
+    display:grid;place-items:center;font-size:21px;flex-shrink:0}
+  .callout p{color:var(--grey-5);font-size:.98rem}
+  .callout p b{color:var(--black)}
+  .callout .big{color:var(--coral);font-weight:700}
+
+  /* INTEGRATIONS */
+  .intg{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+  .intg .box{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:26px;text-align:left}
+  .intg .chip{display:inline-block;font-weight:700;font-size:.78rem;padding:7px 14px;border-radius:999px;
+    background:var(--white);color:var(--black);margin-bottom:18px;letter-spacing:.04em}
+  .intg .box.soon{border-color:rgba(255,107,124,.45)}
+  .intg .box.soon .chip{background:var(--coral);color:var(--white);position:relative}
+  .intg .box.soon .chip::after{content:"PRÓXIMO";position:absolute;top:-10px;right:-10px;font-size:.52rem;
+    background:var(--white);color:var(--black);padding:2px 7px;border-radius:999px;letter-spacing:.08em}
+  .intg ul{list-style:none}
+  .intg li{font-size:.9rem;color:var(--grey-2);padding:6px 0 6px 20px;position:relative}
+  .intg li::before{content:"";position:absolute;left:0;top:13px;width:6px;height:6px;border-radius:50%;background:var(--coral)}
+
+  /* ARCH */
+  .arch{display:grid;grid-template-columns:1fr auto 1fr;gap:26px;align-items:stretch}
+  .arch-col{border-radius:22px;padding:28px;border:1px solid var(--grey-1);background:var(--white);box-shadow:var(--shadow-sm)}
+  .arch-col.future{border:2px solid var(--coral);background:linear-gradient(180deg,#fff5f6,#fff)}
+  .arch-col .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .arch-col .where{font-weight:700;font-size:1.2rem;color:var(--black)}
+  .badge-state{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:6px 12px;border-radius:999px}
+  .badge-now{background:var(--cream);color:var(--grey-4)}
+  .badge-next{background:var(--coral);color:var(--white)}
+  .node{display:flex;align-items:center;gap:13px;background:var(--cream);border:1px solid var(--grey-1);border-radius:14px;padding:13px 15px;margin-bottom:11px}
+  .arch-col.future .node{background:var(--white)}
+  .node .nico{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-size:17px;background:var(--white);border:1px solid var(--grey-1);flex-shrink:0}
+  .arch-col.future .node .nico{background:#fff5f6;border-color:rgba(255,107,124,.3)}
+  .node .ntext b{display:block;font-size:.96rem;color:var(--black)}
+  .node .ntext span{font-size:.82rem;color:var(--grey-4)}
+  .arrow-mid{display:grid;place-items:center;font-size:1.9rem;color:var(--coral);font-weight:700}
+  .arrow-mid small{display:block;font-size:.64rem;color:var(--grey-3);text-transform:uppercase;letter-spacing:.12em;margin-top:6px;font-weight:700}
+
+  /* RELIABILITY */
+  .rel{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .rel .item{display:flex;gap:15px;background:var(--cream);border:1px solid var(--grey-1);border-radius:16px;padding:20px 22px}
+  .rel .item .ck{width:30px;height:30px;border-radius:50%;background:var(--coral);color:var(--white);display:grid;place-items:center;font-weight:700;flex-shrink:0;font-size:.9rem}
+  .rel .item b{font-size:1.02rem;color:var(--black)}
+  .rel .item p{color:var(--grey-4);font-size:.9rem;margin-top:4px}
+
+  /* CLOSING ROADMAP */
+  .road{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:20px}
+  .road .r{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:26px}
+  .road .r .ph{font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--grey-3)}
+  .road .r h3{margin:9px 0 9px;color:var(--white);font-size:1.2rem;font-weight:600}
+  .road .r p{color:var(--grey-2);font-size:.92rem}
+  .road .r.done{border-color:rgba(255,107,124,.5)}
+  .road .r.done .ph{color:var(--coral)}
+
+  .secnote{margin-top:30px;color:var(--grey-3);font-size:1rem}
+  .secnote b{color:var(--white)}
+
+  /* NAV */
+  .dots{position:fixed;right:22px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:13px;z-index:60}
+  .dots a{width:11px;height:11px;border-radius:50%;background:var(--grey-2);border:none;cursor:pointer;transition:.2s;display:block}
+  .dots a.active{background:var(--coral);transform:scale(1.4)}
+  .dots a:hover{background:var(--coral)}
+  .hint{position:fixed;left:22px;bottom:18px;font-size:.76rem;color:var(--grey-4);z-index:60;background:rgba(255,255,255,.7);padding:7px 13px;border-radius:999px;backdrop-filter:blur(6px)}
+  .pagenum{position:absolute;bottom:5vh;right:6vw;font-size:.8rem;color:var(--grey-3);font-weight:600;z-index:2}
+  .bg-black .pagenum{color:var(--grey-4)}
+
+  @media (max-width:900px){
+    .g3,.flow,.metrics,.intg{grid-template-columns:1fr 1fr}
+    .arch{grid-template-columns:1fr}
+    .arrow-mid{transform:rotate(90deg);padding:8px 0}
+    .dots{display:none}
+    .footwrap .tagline{display:none}
+  }
+  @media (max-width:560px){
+    .g3,.flow,.metrics,.intg,.rel,.road{grid-template-columns:1fr}
+  }
+  @media print{
+    .slide{min-height:auto;page-break-after:always;padding:34px}
+    .dots,.hint{display:none}
+    body{scroll-snap-type:none}
+    .bg-black,.badge-next,.intg .box.soon .chip,.step.human .n,.step.human .tag,.rel .item .ck,.brandrow .mark{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+
+<nav class="dots" id="dots"></nav>
+<div class="hint">↑ / ↓ o scroll · tecla P para PDF</div>
+
+<!-- 1 · PORTADA -->
+<section class="slide bg-black" id="s1">
+  <div class="lens" style="width:620px;height:620px;top:-180px;right:-140px"></div>
+  <div class="lens lens-coral" style="width:440px;height:440px;bottom:-160px;left:-120px"></div>
+  <div class="lens" style="width:260px;height:260px;top:40%;right:18%"></div>
+  <div class="slide-inner">
+    <div class="brandrow">
+      <div class="mark">🎬</div>
+      <div class="name">CSV&nbsp;CTV<small>Design Studio</small></div>
+    </div>
+    <span class="kicker">Automatización de creatives · Equipo CTV</span>
+    <h1>Del ticket de Jira al creative en Studio,<br><span class="em">sin trabajo manual.</span></h1>
+    <p class="lead">Un bot detecta los tickets de video CSV/COV, los convierte al formato Seedtag, crea los creatives en Studio y deja el ticket listo. Funcionando solo, 24/7.</p>
+    <div class="hero-badges">
+      <span class="pill"><span class="dot"></span> Validado de punta a punta</span>
+      <span class="pill"><span class="dot"></span> Varios videos por ticket</span>
+      <span class="pill"><span class="dot"></span> Confirmación humana en Slack</span>
+      <span class="pill"><span class="dot"></span> Listo para la nube</span>
+    </div>
+  </div>
+  <div class="footwrap"><span class="wordmark">SEEDTAG</span><span class="tagline">Design Studio · Automatización CTV</span></div>
+  <div class="pagenum">01</div>
+</section>
+
+<!-- 2 · PROBLEMA / VALOR -->
+<section class="slide bg-cream" id="s2">
+  <div class="slide-inner">
+    <div class="secthead">
+      <span class="kicker">Por qué existe</span>
+      <h2>Convertir, subir, crear, mover. <span class="em">A mano, cada día.</span></h2>
+      <p class="sub">Cada video CSV-CTV obliga a un diseñador a descargar el archivo, convertirlo con el preset exacto, subirlo a Studio, crear el creative, adjuntarlo al ticket, comentar y cambiar el estado. Por cada video. El bot hace todo eso.</p>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="lbl">Tiempo por video</div><div class="before">15–20 min a mano</div><div class="after"><span>2–3 min</span> automático</div></div>
+      <div class="metric"><div class="lbl">Disponibilidad</div><div class="before">Horario laboral</div><div class="after"><span>24/7</span> sin pausa</div></div>
+      <div class="metric"><div class="lbl">Consistencia</div><div class="before">Variable</div><div class="after"><span>Preset fijo</span> siempre igual</div></div>
+      <div class="metric"><div class="lbl">Varios videos</div><div class="before">Uno por uno</div><div class="after"><span>Todos</span> de una vez</div></div>
+    </div>
+    <div class="grid g3" style="margin-top:24px">
+      <div class="card"><div class="ico">⚡</div><h3>Resuelve en minutos</h3><p>Convierte y publica en minutos lo que antes tomaba una franja del día de un diseñador.</p></div>
+      <div class="card"><div class="ico">🎯</div><h3>Cero errores de setup</h3><p>Mismo preset de codificación, mismo pipeline de Studio y naming canónico en cada creative.</p></div>
+      <div class="card"><div class="ico">🧑‍💻</div><h3>El equipo manda</h3><p>El bot no avanza sin un <b>“ok”</b> en Slack y nunca borra nada. La decisión es siempre humana.</p></div>
+    </div>
+  </div>
+  <div class="pagenum">02</div>
+</section>
+
+<!-- 3 · CÓMO FUNCIONA -->
+<section class="slide bg-white" id="s3">
+  <div class="slide-inner">
+    <div class="secthead">
+      <span class="kicker">Cómo funciona</span>
+      <h2>El flujo, de principio a fin</h2>
+      <p class="sub">El bot vigila la cola de Jira cada 60 segundos y procesa los tickets de a uno. El único punto humano es la confirmación en Slack (paso 3).</p>
+    </div>
+    <div class="flow">
+      <div class="step"><div class="n">1</div><div class="t">Detecta el ticket</div><div class="d">Encuentra el ticket CSV/COV en Jira y baja el video de donde esté: adjuntos, Google Drive (incl. carpetas), WeTransfer o Dropbox.</div><span class="tag">Jira</span></div>
+      <div class="step"><div class="n">2</div><div class="t">Arma el plan</div><div class="d">Lee cada video (duración, peso), prepara un creative por archivo y detecta si trae QR.</div><span class="tag">Análisis</span></div>
+      <div class="step human"><div class="n">3</div><div class="t">Pide el “ok”</div><div class="d">Avisa en <b>#csv-tickets</b> con el plan y espera la confirmación del equipo. Sin ok, no sigue.</div><span class="tag">Humano · Slack</span></div>
+      <div class="step"><div class="n">4</div><div class="t">Convierte</div><div class="d">FFmpeg al formato Seedtag: 1080p, preset Mezzanine TradeDesk, bitrate según duración.</div><span class="tag">FFmpeg</span></div>
+      <div class="step"><div class="n">5</div><div class="t">Sube a Studio</div><div class="d">Carga el video bajo el bot, espera el procesado y crea el creative CSV-CTV.</div><span class="tag">Studio</span></div>
+      <div class="step"><div class="n">6</div><div class="t">Adjunta y comenta</div><div class="d">Sube el .mp4 al ticket y deja los links de preview en el comentario y la descripción.</div><span class="tag">Jira</span></div>
+      <div class="step"><div class="n">7</div><div class="t">Mueve el estado</div><div class="d">Lleva el ticket de Triage a To Build y luego a Building, automáticamente.</div><span class="tag">Jira</span></div>
+      <div class="step"><div class="n">8</div><div class="t">Limpia y sigue</div><div class="d">Borra los temporales y vuelve a vigilar la cola. Todo queda registrado.</div><span class="tag">Cierre</span></div>
+    </div>
+    <div class="callout">
+      <span class="ci">⚖️</span>
+      <p><b>Control de tamaño:</b> si un video convertido supera <span class="big">150 MB</span> —el límite de adjunto de Jira— el bot pregunta en Slack si lo recomprime a menor bitrate antes de adjuntarlo. Otra decisión que queda en manos del equipo.</p>
+    </div>
+  </div>
+  <div class="pagenum">03</div>
+</section>
+
+<!-- 4 · INTEGRACIONES -->
+<section class="slide bg-black" id="s4">
+  <div class="lens" style="width:520px;height:520px;top:-160px;left:-120px"></div>
+  <div class="lens lens-coral" style="width:380px;height:380px;bottom:-140px;right:-100px"></div>
+  <div class="slide-inner">
+    <div class="secthead">
+      <span class="kicker">Con qué se conecta</span>
+      <h2 style="color:#fff">Cuatro sistemas, <span class="em">un solo flujo.</span></h2>
+      <p class="sub">El bot orquesta las herramientas que el equipo ya usa. No reemplaza nada: las conecta.</p>
+    </div>
+    <div class="intg">
+      <div class="box"><span class="chip">Jira</span><ul><li>Vigila la cola CTV</li><li>Descarga los videos</li><li>Adjunta y comenta</li><li>Cambia el estado</li></ul></div>
+      <div class="box"><span class="chip">Slack</span><ul><li>Avisa cada ticket</li><li>Espera el “ok”</li><li>Reporta el progreso</li><li>Alerta si algo falla</li></ul></div>
+      <div class="box"><span class="chip">Studio Seedtag</span><ul><li>Sube el video</li><li>Crea el creative</li><li>Genera el preview</li><li>Login que no caduca</li></ul></div>
+      <div class="box soon"><span class="chip">Cloud Storage</span><ul><li>Backup del .mp4</li><li>Link permanente</li><li>Se activa en la nube</li><li>Sin cookies, seguro</li></ul></div>
+    </div>
+    <p class="secnote">🔒 <b>Regla absoluta:</b> el bot <b>nunca</b> borra nada de Jira ni de Studio. Si detecta algo a eliminar, lo avisa — la acción la toma una persona.</p>
+  </div>
+  <div class="pagenum">04</div>
+</section>
+
+<!-- 5 · ARQUITECTURA -->
+<section class="slide bg-cream" id="s5">
+  <div class="slide-inner">
+    <div class="secthead">
+      <span class="kicker">Dónde corre</span>
+      <h2>Hoy en local. <span class="em">Mañana, 24/7 en la nube.</span></h2>
+      <p class="sub">La lógica es la misma; solo cambia dónde vive. Hoy se prueba de forma controlada en una Mac; el siguiente paso es una máquina en la nube que corre sola, sin depender de ningún portátil.</p>
+    </div>
+    <div class="arch">
+      <div class="arch-col">
+        <div class="head"><span class="where">Hoy · Local</span><span class="badge-state badge-now">En prueba</span></div>
+        <div class="node"><div class="nico">📥</div><div class="ntext"><b>Jira — cola CTV</b><span>origen de los tickets</span></div></div>
+        <div class="node"><div class="nico">💻</div><div class="ntext"><b>Mac + servicio</b><span>el bot corre solo, se reinicia solo</span></div></div>
+        <div class="node"><div class="nico">🎬</div><div class="ntext"><b>Studio + Slack</b><span>creatives + confirmación humana</span></div></div>
+        <div class="node"><div class="nico">📄</div><div class="ntext"><b>Logs en archivo</b><span>registro local rotado</span></div></div>
+        <div class="node"><div class="nico">🎛️</div><div class="ntext"><b>Panel de control web</b><span>ver y administrar el bot</span></div></div>
+      </div>
+      <div class="arrow-mid">→<small>Migración</small></div>
+      <div class="arch-col future">
+        <div class="head"><span class="where">Mañana · Nube</span><span class="badge-state badge-next">Objetivo</span></div>
+        <div class="node"><div class="nico">📥</div><div class="ntext"><b>Jira — cola CTV</b><span>igual, sin cambios</span></div></div>
+        <div class="node"><div class="nico">☁️</div><div class="ntext"><b>Servidor en la nube</b><span>corre 24/7, sin portátil, arranca solo</span></div></div>
+        <div class="node"><div class="nico">🎬</div><div class="ntext"><b>Studio + Slack + Storage</b><span>creatives + backup permanente del .mp4</span></div></div>
+        <div class="node"><div class="nico">📊</div><div class="ntext"><b>Monitoreo + alertas</b><span>panel de errores en la nube</span></div></div>
+        <div class="node"><div class="nico">🎛️</div><div class="ntext"><b>Panel de control web</b><span>mismo dashboard, detrás de login</span></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="pagenum">05</div>
+</section>
+
+<!-- 6 · FIABILIDAD -->
+<section class="slide bg-white" id="s6">
+  <div class="slide-inner">
+    <div class="secthead">
+      <span class="kicker">Por qué es confiable</span>
+      <h2>Hecho para <span class="em">no parar.</span></h2>
+      <p class="sub">El objetivo es que corra solo, sin mantenimiento diario. Estas garantías ya están funcionando y probadas durante la prueba local.</p>
+    </div>
+    <div class="rel">
+      <div class="item"><div class="ck">✓</div><div><b>Se reinicia solo</b><p>Si el proceso se cae, el sistema lo levanta de nuevo. Sobrevivió a apagados y reinicios durante la prueba.</p></div></div>
+      <div class="item"><div class="ck">✓</div><div><b>Login que no caduca</b><p>La sesión de Studio se renueva sola en cada llamada y se guarda en disco. Mientras el bot trabaje, nunca pide volver a entrar.</p></div></div>
+      <div class="item"><div class="ck">✓</div><div><b>No repite ni pierde tickets</b><p>Recuerda qué ya procesó. Si un video tarda en Studio, lo retoma en una segunda pasada cuando esté listo.</p></div></div>
+      <div class="item"><div class="ck">✓</div><div><b>Procesa de a uno</b><p>Trabaja los tickets en orden: uno termina antes de empezar el siguiente, sin archivos cruzados.</p></div></div>
+      <div class="item"><div class="ck">✓</div><div><b>Avisa cuando algo falla</b><p>Cualquier error se reporta en Slack y se comenta en el ticket. Nunca cambia el estado a la fuerza.</p></div></div>
+      <div class="item"><div class="ck">✓</div><div><b>Todo queda registrado</b><p>Logs rotados de cada acción. En la nube, además, panel de errores y alertas.</p></div></div>
+    </div>
+  </div>
+  <div class="pagenum">06</div>
+</section>
+
+<!-- 7 · CIERRE -->
+<section class="slide bg-black" id="s7">
+  <div class="lens lens-coral" style="width:560px;height:560px;top:-180px;right:-130px"></div>
+  <div class="lens" style="width:400px;height:400px;bottom:-150px;left:-110px"></div>
+  <div class="lens" style="width:220px;height:220px;top:30%;left:12%"></div>
+  <div class="slide-inner">
+    <span class="kicker">Estado y próximos pasos</span>
+    <h2 style="color:#fff">Ya funciona. <span class="em">Ahora, a producción.</span></h2>
+    <p class="lead" style="margin-bottom:6px">El flujo completo está validado con tickets reales. El siguiente paso es llevarlo a un servidor para que corra 24/7 sin depender de ningún equipo.</p>
+    <div class="road">
+      <div class="r done"><div class="ph">Fase 1 · Hecho</div><h3>Prueba local</h3><p>Detección, conversión, Studio, creatives, comentario y transición de estado — de punta a punta, con varios videos por ticket.</p></div>
+      <div class="r done"><div class="ph">Fase 2 · Hecho</div><h3>Estabilización</h3><p>Bugs corregidos, código limpio, confirmación por Slack, manejo de QR, recompresión y reactivación de tickets.</p></div>
+      <div class="r"><div class="ph">Fase 3 · Próximo</div><h3>Servidor 24/7</h3><p>Máquina en la nube, panel de monitoreo y alertas, backup de los videos. Corre solo, siempre disponible.</p></div>
+    </div>
+  </div>
+  <div class="footwrap"><span class="wordmark">SEEDTAG</span><span class="tagline">Design Studio · Automatización CTV</span></div>
+  <div class="pagenum">07</div>
+</section>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const dots = document.getElementById('dots');
+  slides.forEach((s,i)=>{
+    const a=document.createElement('a');
+    a.title='Slide '+(i+1);
+    a.addEventListener('click',()=>s.scrollIntoView({behavior:'smooth'}));
+    dots.appendChild(a);
+  });
+  const dotEls=Array.from(dots.children);
+  const io=new IntersectionObserver(es=>{
+    es.forEach(e=>{
+      if(e.isIntersecting){
+        const i=slides.indexOf(e.target);
+        dotEls.forEach(d=>d.classList.remove('active'));
+        if(dotEls[i])dotEls[i].classList.add('active');
+      }
+    });
+  },{threshold:.55});
+  slides.forEach(s=>io.observe(s));
+  function current(){let best=0,bd=Infinity;slides.forEach((s,i)=>{const d=Math.abs(s.getBoundingClientRect().top);if(d<bd){bd=d;best=i;}});return best;}
+  document.addEventListener('keydown',e=>{
+    const i=current();
+    if(['ArrowDown','PageDown',' '].includes(e.key)){e.preventDefault();if(slides[i+1])slides[i+1].scrollIntoView({behavior:'smooth'});}
+    if(['ArrowUp','PageUp'].includes(e.key)){e.preventDefault();if(slides[i-1])slides[i-1].scrollIntoView({behavior:'smooth'});}
+    if(e.key==='Home'){e.preventDefault();slides[0].scrollIntoView({behavior:'smooth'});}
+    if(e.key==='End'){e.preventDefault();slides[slides.length-1].scrollIntoView({behavior:'smooth'});}
+    if(e.key==='p'||e.key==='P'){window.print();}
+  });
+</script>
+</body>
+</html>

@@ -14,6 +14,7 @@ Campos reales descubiertos via API (proyecto SDS):
 """
 
 import re
+import json
 import requests
 import logging
 from pathlib import Path
@@ -618,6 +619,71 @@ class JiraClient:
             log.warning(f"{ticket_key}: set_fields fallo HTTP {r.status_code} — {r.text[:300]}")
             r.raise_for_status()
         log.info(f"{ticket_key}: fields actualizados ({list(fields.keys())})")
+
+    @staticmethod
+    def _collect_hrefs(nodes) -> list:
+        """Recoge todos los href de marks tipo 'link' dentro de una lista de
+        nodos ADF (recursivo). Sirve para idempotencia: no duplicar links que
+        ya estan en la descripcion."""
+        hrefs: list[str] = []
+
+        def walk(n):
+            if isinstance(n, dict):
+                for m in (n.get("marks") or []):
+                    if m.get("type") == "link":
+                        href = (m.get("attrs") or {}).get("href")
+                        if href:
+                            hrefs.append(href)
+                for c in (n.get("content") or []):
+                    walk(c)
+            elif isinstance(n, list):
+                for c in n:
+                    walk(c)
+
+        walk(nodes)
+        return hrefs
+
+    def append_to_description(self, ticket_key: str, new_nodes: list) -> bool:
+        """Agrega `new_nodes` (lista de nodos ADF, p.ej. paragraphs) al FINAL de
+        la descripcion actual del ticket, PRESERVANDO el contenido existente
+        (brief del cliente, etc). Hace GET de la descripcion, concatena y PUT.
+
+        Idempotente: si todos los hrefs de los nodos nuevos ya aparecen en la
+        descripcion actual, no escribe nada (evita duplicar en re-procesos del
+        mismo ticket).
+
+        Devuelve True si escribio, False si no habia nada que agregar o si los
+        links ya estaban presentes.
+        """
+        if not new_nodes:
+            return False
+        url = f"{self.base_url}/rest/api/3/issue/{ticket_key}"
+        r = requests.get(url, auth=self.auth, headers=self.headers,
+                         params={"fields": "description"})
+        r.raise_for_status()
+        current = (r.json().get("fields") or {}).get("description")
+        if not isinstance(current, dict):
+            current = {"type": "doc", "version": 1, "content": []}
+        existing = current.get("content") or []
+
+        # Idempotencia por hrefs: si todos los links nuevos ya estan en la
+        # descripcion actual, no duplicar.
+        new_hrefs = self._collect_hrefs(new_nodes)
+        if new_hrefs:
+            existing_str = json.dumps(existing, ensure_ascii=False)
+            if all(h in existing_str for h in new_hrefs):
+                log.info(f"{ticket_key}: la descripcion ya tiene los links de Studio, no se duplica")
+                return False
+
+        merged = {"type": "doc", "version": 1, "content": existing + new_nodes}
+        pr = requests.put(url, auth=self.auth,
+                          headers={**self.headers, "Content-Type": "application/json"},
+                          json={"fields": {"description": merged}})
+        if pr.status_code >= 400:
+            log.warning(f"{ticket_key}: append_to_description fallo HTTP {pr.status_code} — {pr.text[:300]}")
+            pr.raise_for_status()
+        log.info(f"{ticket_key}: links de Studio agregados a la descripcion")
+        return True
 
     def transition(self, ticket_key: str, transition_id: str, fields: dict | None = None):
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/transitions"

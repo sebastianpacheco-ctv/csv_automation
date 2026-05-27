@@ -27,7 +27,7 @@ Detecta tickets de Jira con formato Standard Video (CSV/COV), convierte el víde
    - **Espera procesado**: 10s → check → 10s × 15 (Studio completa en ~10-30s). Si tarda más → `pending_studio.json` 2da pasada.
    - **Crea creative** CSV-CTV con `createCovCreative`.
    - **Adjunta el .mp4** al ticket Jira (pre-check 150MB: si supera, pregunta en Slack si recomprime).
-9. **Comentario en Jira** (ADF clickable) con los preview links de todos los creatives + nota de borrar originales.
+9. **Comentario en Jira** (ADF clickable) con los preview links de todos los creatives + nota de borrar originales. **Los mismos links de preview de Studio se AGREGAN también al campo `description`** del ticket (al final, preservando el contenido existente; idempotente por href — ver `JiraClient.append_to_description` + `_build_studio_links_description`).
 10. **Setea customfield_15826** (Seedtag Specs, id 27743) vía PUT, luego **transición To Build → Building** vía `Start Building`.
 11. **Cleanup** de los .mp4 en `tmp/<TICKET>/` (conserva sidecars).
 

@@ -296,6 +296,33 @@ def _build_done_comment_multi(results: list[dict], total: int) -> dict:
     return {"type": "doc", "version": 1, "content": content}
 
 
+def _build_studio_links_description(results: list[dict], total: int) -> list[dict]:
+    """Nodos ADF (paragraphs) con SOLO los links de preview de Studio, uno por
+    video, para AGREGAR al final de la descripcion del ticket. Incluye un
+    encabezado en negrita. Devuelve [] si ningun video tiene preview (nada que
+    agregar).
+    """
+    link_nodes = []
+    for i, r in enumerate(results, start=1):
+        url = r.get("studio_url")
+        if not url:
+            continue
+        # OJO: nada de text nodes vacios — Jira rechaza ADF con text="".
+        parts = []
+        if total > 1:
+            parts.append({"type": "text", "text": f"Video {i}: "})
+        parts.append({"type": "text", "text": url,
+                      "marks": [{"type": "link", "attrs": {"href": url}}]})
+        link_nodes.append({"type": "paragraph", "content": parts})
+    if not link_nodes:
+        return []
+    header = {"type": "paragraph", "content": [
+        {"type": "text", "text": "🎬 Creatives en Studio:",
+         "marks": [{"type": "strong"}]},
+    ]}
+    return [header] + link_nodes
+
+
 def _cleanup_ticket_files(ticket_dir: Path) -> None:
     """Borra .mp4 raw + convertido tras procesar con exito.
     Conserva .studio_video_id (idempotencia) y cualquier otro fichero no .mp4.
@@ -777,6 +804,20 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
         # ── Comentario agregado en Jira (todos los creatives) ──
         jira.add_comment_adf(ticket_key, _build_done_comment_multi(results, total))
+
+        # ── Links de Studio tambien en la Descripcion del ticket ──
+        # Se AGREGAN al final, preservando el contenido existente (brief, etc).
+        # No fatal: si falla, el comentario ya quedo y el flujo sigue.
+        try:
+            desc_nodes = _build_studio_links_description(results, total)
+            if desc_nodes:
+                jira.append_to_description(ticket_key, desc_nodes)
+        except Exception as de:
+            log.warning(f"{ticket_key}: no se pudo escribir links en la descripcion: {de}")
+            post_thread(
+                f"⚠️ No pude escribir los links de Studio en la Descripcion "
+                f"(`{type(de).__name__}`). El comentario sí quedó."
+            )
 
         # ── Resumen en Slack ──
         ok_count = sum(1 for r in results if r.get("studio_url"))

@@ -520,28 +520,47 @@ class StudioAPIClient:
         y underscores ("Name must be upper-case only with - or _"). SIEMPRE
         sanitizamos antes de mandar — daba igual que el caller pasara un
         filename ya formateado, si tenia minusculas el servidor rechazaba.
+
+        Si Studio responde "The name already exists" (re-proceso de un ticket
+        cuyo video ya esta subido), reintentamos UNA vez con un sufijo de
+        fecha-hora (_RYYYYMMDDHHMM) para crear un nombre unico. Asi el
+        re-proceso no choca con el video viejo (que no podemos borrar).
         """
         if not file_path.exists():
             raise FileNotFoundError(file_path)
         size_mb = file_path.stat().st_size / 1024 / 1024
-        send_name = self._sanitize_video_filename(filename or file_path.name)
-        log.info(f"Studio API: subiendo {file_path.name} como '{send_name}' "
-                 f"({size_mb:.1f} MB) con pipeline='{video_pipeline_id}'")
-        variables = {
-            "filename": send_name,
-            "file": None,  # apollo-upload-client placeholder
-            "videoPipelineId": video_pipeline_id,
-        }
-        data = self._graphql_upload(
-            query=M_UPLOAD_VIDEO,
-            variables=variables,
-            file_path=file_path,
-            file_var_path="variables.file",
-            multipart_filename=send_name,
-        )
-        video = data["uploadVideo"]
-        log.info(f"Studio API: vídeo subido id={video['id']}")
-        return video
+        base_name = self._sanitize_video_filename(filename or file_path.name)
+
+        for attempt in range(2):
+            send_name = base_name
+            if attempt == 1:
+                # Reintento: sufijo de fecha-hora para nombre unico
+                from datetime import datetime as _dt
+                suffix = _dt.now().strftime("_R%Y%m%d%H%M")
+                send_name = self._sanitize_video_filename(base_name + suffix)
+            log.info(f"Studio API: subiendo {file_path.name} como '{send_name}' "
+                     f"({size_mb:.1f} MB) con pipeline='{video_pipeline_id}'")
+            variables = {
+                "filename": send_name,
+                "file": None,  # apollo-upload-client placeholder
+                "videoPipelineId": video_pipeline_id,
+            }
+            try:
+                data = self._graphql_upload(
+                    query=M_UPLOAD_VIDEO,
+                    variables=variables,
+                    file_path=file_path,
+                    file_var_path="variables.file",
+                    multipart_filename=send_name,
+                )
+            except StudioAPIError as e:
+                if "name already exists" in str(e).lower() and attempt == 0:
+                    log.warning(f"Studio API: '{send_name}' ya existe — reintento con sufijo de fecha")
+                    continue
+                raise
+            video = data["uploadVideo"]
+            log.info(f"Studio API: vídeo subido id={video['id']} (name='{send_name}')")
+            return video
 
     @staticmethod
     def _sanitize_video_filename(name: str) -> str:

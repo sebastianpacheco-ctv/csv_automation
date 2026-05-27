@@ -172,6 +172,16 @@ class JiraClient:
         if downloaded:
             return downloaded
 
+        # ── Sin adjuntos: ¿el ticket apunta a una CARPETA de Google Drive?
+        # (varios archivos → varios creatives). gdown lista y baja la carpeta.
+        folder_url = self._find_drive_folder_url(issue)
+        if folder_url:
+            vids = self._download_gdrive_folder(folder_url, dest_dir)
+            if vids:
+                return vids
+            # Si la carpeta falló, seguimos al fallback de link único por si
+            # hubiera además un link directo a un archivo en el ticket.
+
         # ── Sin adjuntos: buscar links (devuelve 0-1) ─────────────────────
         single = self.download_video(issue, dest_dir)
         return [single] if single else []
@@ -428,6 +438,64 @@ class JiraClient:
                 f.write(chunk)
         log.info(f"Google Drive: descargado {dest.name} ({dest.stat().st_size/1024/1024:.1f} MB)")
         return dest
+
+    def _find_drive_folder_url(self, issue: dict) -> str | None:
+        """Busca un link a una CARPETA de Google Drive (/drive/folders/{id}) en
+        el texto del ticket (descripcion, customfields, comentarios). Una carpeta
+        puede traer varios videos → varios creatives, por eso se trata aparte
+        del link a archivo unico."""
+        fields = issue.get("fields", {})
+        texts = [self._extract_text(fields.get("description") or {})]
+        for key, val in fields.items():
+            if key.startswith("customfield_") and isinstance(val, str) and val:
+                texts.append(val)
+            elif key.startswith("customfield_") and isinstance(val, dict):
+                texts.append(self._extract_text(val))
+        for comment in fields.get("comment", {}).get("comments", []):
+            texts.append(self._extract_text(comment.get("body", {})))
+        full = " ".join(texts)
+        m = re.search(
+            r"https?://drive\.google\.com/drive/(?:u/\d+/)?folders/"
+            r"[a-zA-Z0-9_-]+[^\s\)\]\"'>]*",
+            full,
+        )
+        return m.group(0).rstrip(".,);]") if m else None
+
+    def _download_gdrive_folder(self, url: str, dest_dir: Path) -> list[Path]:
+        """Descarga TODOS los archivos de una carpeta PUBLICA de Google Drive
+        (link /drive/folders/{id}) y devuelve los que sean videos.
+
+        Usa gdown, que lista y baja carpetas publicas sin credenciales (hasta
+        ~50 archivos). Requiere que la carpeta este compartida 'cualquiera con
+        el link'. Devuelve [] si gdown no esta instalado, la carpeta es privada,
+        o no tiene videos.
+        """
+        try:
+            import gdown
+        except ImportError:
+            log.warning("gdown no instalado — no puedo bajar carpetas de Drive "
+                        "(pip install gdown). Aviso para descarga manual.")
+            return []
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"Google Drive: bajando carpeta {url}")
+        try:
+            gdown.download_folder(url=url, output=str(dest_dir),
+                                  quiet=True, use_cookies=False)
+        except Exception as e:
+            log.warning(f"Google Drive: fallo al bajar la carpeta {url}: {e}")
+        # Recolectar los videos que hayan quedado. rglob por si la carpeta de
+        # Drive tenia subcarpetas. Se ignoran adjuntos del propio bot.
+        videos = sorted(
+            p for p in dest_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+            and not self._is_bot_attachment(p.name)
+        )
+        if videos:
+            log.info(f"Google Drive: {len(videos)} video(s) bajados de la carpeta")
+        else:
+            log.warning(f"Google Drive: carpeta sin videos descargables o "
+                        f"privada: {url}")
+        return videos
 
     def _download_wetransfer(self, url: str, dest_dir: Path) -> Path | None:
         """WeTransfer: resuelve la URL de descarga directa via su API interna.

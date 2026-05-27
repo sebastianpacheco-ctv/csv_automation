@@ -144,7 +144,7 @@ class StudioAPIClient:
         video = client.upload_video(path)          # sube el .mp4
         client.wait_video_ready(video["id"])       # espera procesamiento
         creative_id = client.create_cov_creative(video["id"], name)
-        client.update_creative_country_category(creative_id, "usa", "automotive")
+        client.set_creative_dimensions(creative_id, "usa", "automotive", "animation")
         link = client.get_preview_link(creative_id)
     """
 
@@ -499,6 +499,22 @@ class StudioAPIClient:
         creative_id = self.create_cov_creative(ad_template)
         log.info(f"Studio API: creative CSV-CTV creado id={creative_id}")
 
+        # 3b. Setear country/category/configuration a nivel creative para que
+        # aparezcan en la LISTA de Studio Manager (createCovCreative solo los
+        # deja dentro del creativeTree → se ven al editar pero no en la lista).
+        # No fatal: el creative ya existe; si esto falla, solo faltan los tags
+        # de la columna.
+        try:
+            self.set_creative_dimensions(
+                creative_id, country=country, category=category,
+                configuration="animation",
+            )
+            log.info(f"Studio API: dimensions seteadas en {creative_id} "
+                     f"(country={country}, category={category}, config=animation)")
+        except Exception as e:
+            log.warning(f"Studio API: no se pudieron setear dimensions en "
+                        f"{creative_id}: {e}")
+
         # 4. Return all useful URLs
         return {
             "video_id": video_id,
@@ -652,13 +668,21 @@ class StudioAPIClient:
         variables = {"id": creative_id, "creative": creative_input}
         return self._graphql(M_UPDATE_CREATIVE, variables)["updateCreative"]["id"]
 
-    def update_creative_country_category(self, creative_id: str,
-                                         country: str = None,
-                                         category: str = None) -> str:
-        """
-        Helper: actualiza solo country y/o category. Internamente obtiene el
-        creative actual y lo re-envía con los campos cambiados (updateCreative
-        espera el modelo completo).
+    def set_creative_dimensions(self, creative_id: str,
+                                country: str = None,
+                                category: str = None,
+                                configuration: str = None) -> str:
+        """Setea country / category / configuration a NIVEL creative (top-level).
+
+        IMPORTANTE: estos son los campos que muestra la LISTA de Studio Manager
+        (columnas Country / Category / Config). El bot ya los pone dentro del
+        `creativeTree.props` al crear el creative — eso es lo que se ve al EDITAR
+        (panel "Dimensions") — pero la lista lee los campos top-level del modelo
+        del creative, que `createCovCreative` NO rellena. Hay que setearlos
+        aparte con `updateCreative`, que es lo que hace este método.
+
+        Internamente obtiene el creative actual (getCreativeById) y lo re-envía
+        con los campos cambiados, porque updateCreative espera el modelo completo.
         """
         current = self.get_creative(creative_id)
         creative_input = {
@@ -678,6 +702,8 @@ class StudioAPIClient:
             creative_input["country"] = country
         if category is not None:
             creative_input["category"] = category
+        if configuration is not None:
+            creative_input["configuration"] = configuration
         return self.update_creative(creative_id, creative_input)
 
     def get_preview_link(self, creative_id: str) -> str:

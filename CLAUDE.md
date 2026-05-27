@@ -25,7 +25,7 @@ Detecta tickets de Jira con formato Standard Video (CSV/COV), convierte el víde
    - **Renombra** al nombre canónico (`<summary_sanitizado>[_CTV_CSV][_Vn]`).
    - **Sube a Studio** bajo el bot `design_automations@seedtag.com`, pipeline **`ctv-base`** (⚠️ el SELECTOR_NAME string, NO el id hex — ver sección Studio).
    - **Espera procesado**: 10s → check → 10s × 15 (Studio completa en ~10-30s). Si tarda más → `pending_studio.json` 2da pasada.
-   - **Crea creative** CSV-CTV con `createCovCreative`.
+   - **Crea creative** CSV-CTV con `createCovCreative`, y luego **setea country/category/configuration a nivel creative** con `set_creative_dimensions` (ver gotcha abajo).
    - **Adjunta el .mp4** al ticket Jira (pre-check 150MB: si supera, pregunta en Slack si recomprime).
 9. **Comentario en Jira** (ADF clickable) con los preview links de todos los creatives + nota de borrar originales. **Los mismos links de preview de Studio se AGREGAN también al campo `description`** del ticket (al final, preservando el contenido existente; idempotente por href — ver `JiraClient.append_to_description` + `_build_studio_links_description`).
 10. **Setea customfield_15826** (Seedtag Specs, id 27743) vía PUT, luego **transición To Build → Building** vía `Start Building`.
@@ -201,6 +201,22 @@ El antiguo `StudioUploader` con Playwright fue eliminado (Studio es 100% divs/SV
 4. Si no, **esperar 10s** y reintentar, hasta **15 retries** (~2.7 min total)
 5. Si `COMPLETED` → crear creative; si no → lanzar `StudioVideoNotReadyError`
 6. El orquestador captura esa excepción, postea en el hilo del ticket y guarda el `video_id` en `tmp/.pending_studio.json`. **Segunda pasada**: el loop principal revisa pending_studio cada 60s; cuando el video llega a COMPLETED crea el creative y postea un segundo comentario en Jira con el link. Cap de 2h.
+
+### Gotcha — country/category/config no aparecen en la LISTA (28-may-2026)
+Studio guarda country/category/configuration en **dos lugares**:
+1. Dentro del `creativeTree.props` del creative — lo que `createCovCreative`
+   rellena (vía `build_csv_ctv_ad_template`). Esto es lo que se ve al **EDITAR**
+   el creative (panel "Dimensions" de Studio pro).
+2. Campos **top-level del modelo del creative** (`creative.country`,
+   `.category`, `.configuration`) — lo que muestran las **columnas de la LISTA**
+   en Studio Manager.
+`createCovCreative` solo rellena (1), NO (2). Por eso los creatives del bot se
+veían con esas columnas vacías en la lista aunque al editar estaban bien.
+**Fix:** tras crear, llamar `set_creative_dimensions(creative_id, country,
+category, configuration="animation")` (hace getCreativeById + updateCreative con
+los campos top-level). El bot lo hace dentro de `process_video_to_creative`, en
+try/except no fatal (el creative ya existe; si falla solo faltan los tags de la
+columna). Validado: updateCreative acepta `configuration` además de country/category.
 
 ### Validaciones del servidor
 - `uploadVideo.filename` solo acepta `[A-Z0-9_]+`, sin guiones ni extensión. La sanitización está en `StudioAPIClient._sanitize_video_filename()`. Ej: `'SDS-21644 Foo.mp4'` → `'_SDS_21644_FOO'`.

@@ -18,6 +18,8 @@ class SlackClient:
         self.channel = channel
         self.channel_id = channel_id or channel
         self.status_callback = None  # se asigna desde main.py
+        self.approval_check = None   # se asigna desde main.py: aprobar/rechazar
+                                     # un ticket desde el dashboard (.bot_approval.json)
         self._seen_status: set = set()
         log.info(f"Slack listo — canal: #{channel} (ID: {self.channel_id})")
 
@@ -191,6 +193,18 @@ class SlackClient:
         log.info(f"Esperando respuesta en hilo del canal #{self.channel}...")
 
         while time.time() < deadline:
+            # Aprobación desde el dashboard (escribe .bot_approval.json). Se
+            # chequea aquí porque durante la espera el bot no procesa el control
+            # file. Tiene que ir antes de leer Slack: el dashboard postea con el
+            # token del bot y el filtro de bot_id de abajo lo ignoraría.
+            if self.approval_check:
+                dec = self.approval_check(message_ts)
+                if dec == "ok":
+                    log.info("Respuesta 'ok' desde el dashboard")
+                    return {"action": "ok"}
+                if dec in ("no", "cancel"):
+                    log.info("Respuesta 'no' desde el dashboard")
+                    return {"action": "cancel"}
             try:
                 r = self.client.conversations_replies(
                     channel=self.channel_id, ts=message_ts, limit=20,

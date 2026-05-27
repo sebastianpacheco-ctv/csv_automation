@@ -169,22 +169,28 @@ _STATUS_PATH = None
 _HISTORY_PATH = None
 
 
-def _set_activity(text) -> None:
-    """Heartbeat de actividad para el dashboard: setea el campo 'current' del
-    status y refresca updated_at. text=None → idle. Hace merge para no pisar el
-    resto del status que escribe el loop. Permite que el dashboard muestre
-    'procesando SDS-X · paso Y' en vez de 'offline' durante tareas largas."""
+def _status_merge(**fields) -> None:
+    """Merge de campos en .bot_status.json y refresca updated_at, sin pisar el
+    resto del status que escribe el loop. Base de _set_activity y del campo
+    'awaiting' (ticket esperando ok, para aprobar desde el dashboard)."""
     if _STATUS_PATH is None:
         return
     try:
         data = {}
         if _STATUS_PATH.exists():
             data = json.loads(_STATUS_PATH.read_text())
-        data["current"] = text
+        data.update(fields)
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         _STATUS_PATH.write_text(json.dumps(data, indent=2))
     except Exception:
         pass
+
+
+def _set_activity(text) -> None:
+    """Heartbeat de actividad para el dashboard (campo 'current'). text=None →
+    idle. Permite mostrar 'procesando SDS-X · paso Y' en vez de 'offline'
+    durante tareas largas."""
+    _status_merge(current=text)
 
 
 def _record_history(entry: dict, cap: int = 60) -> None:
@@ -729,7 +735,11 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
     # ── 2. Esperar respuesta en el hilo (ok / no) ─────────────────────────
     _set_activity(f"{ticket_key}: esperando 'ok' en Slack")
+    # Publicar el ticket en espera para que el dashboard pueda aprobar/rechazar
+    # (postea ok/no a este hilo). Se limpia al recibir respuesta.
+    _status_merge(awaiting={"ticket": ticket_key, "ts": msg["ts"], "channel": msg["channel"]})
     response = slack.wait_for_ticket_response(msg["channel"], msg["ts"], timeout=3600)
+    _status_merge(awaiting=None)
     if response is None:
         post_thread(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
         _record_history({"key": ticket_key, "summary": summary,
@@ -1050,8 +1060,26 @@ def main():
     control_path = tmp_root / ".bot_control.json"
     status_path = tmp_root / ".bot_status.json"
     history_path = tmp_root / ".bot_history.json"
+    approval_path = tmp_root / ".bot_approval.json"
     global _STATUS_PATH, _HISTORY_PATH
     _STATUS_PATH, _HISTORY_PATH = status_path, history_path
+
+    def _approval_check(thread_ts):
+        """Lee una aprobación del dashboard (.bot_approval.json) para `thread_ts`,
+        la consume (borra el archivo) y devuelve 'ok'/'no'. None si no aplica.
+        La usa slack.wait_for_ticket_response durante la espera del ok."""
+        try:
+            if not approval_path.exists():
+                return None
+            d = json.loads(approval_path.read_text())
+            if d.get("ts") == thread_ts and d.get("decision"):
+                approval_path.unlink()
+                return d["decision"]
+        except Exception:
+            pass
+        return None
+    slack.approval_check = _approval_check
+
     started_at = datetime.now(timezone.utc).isoformat()
     paused = _load_control(control_path).get("paused", False)
     if paused:

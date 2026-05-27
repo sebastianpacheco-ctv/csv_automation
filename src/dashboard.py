@@ -56,9 +56,38 @@ PENDING_PATH = TMP / ".pending_studio.json"
 STATUS_PATH = TMP / ".bot_status.json"
 CONTROL_PATH = TMP / ".bot_control.json"
 HISTORY_PATH = TMP / ".bot_history.json"
+APPROVAL_PATH = TMP / ".bot_approval.json"
 JWT_PATH = TMP / ".studio_jwt"
 POLL = getattr(bot, "POLL_INTERVAL", 60)
 LAUNCHD = ROOT / "scripts" / "launchd.sh"
+EDITABLE_CONFIG = ("BITRATE_SHORT", "BITRATE_LONG", "DURATION_THRESHOLD")
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mxf"}
+
+
+def _set_env_var(key: str, value: str):
+    """Setea KEY=value en el .env (reemplaza la línea o la agrega)."""
+    env = ROOT / ".env"
+    lines = env.read_text().splitlines() if env.exists() else []
+    out, found = [], False
+    for ln in lines:
+        if ln.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}"); found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"{key}={value}")
+    env.write_text("\n".join(out) + "\n")
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except Exception:
+                pass
+    return total
 
 VALID_ACTIONS = {"reprocess", "cancel", "reactivate", "pause", "resume"}
 
@@ -194,6 +223,7 @@ def _build_state() -> dict:
             "last_poll": status.get("last_poll"),
             "updated_at": status.get("updated_at"),
             "current": status.get("current"),
+            "awaiting": status.get("awaiting"),
             "queue_count": status.get("queue_count"),
             "seen": len(seen),
             "pending_studio": len(pending),
@@ -330,6 +360,97 @@ def api_health():
     return jsonify({"checks": checks, "now": datetime.now(timezone.utc).isoformat()})
 
 
+@app.get("/api/disk")
+def api_disk():
+    import shutil
+    try:
+        free_gb = shutil.disk_usage(str(TMP)).free / (1024 ** 3)
+    except Exception:
+        free_gb = None
+    folders, tmp_total = [], 0
+    try:
+        for d in TMP.iterdir():
+            if d.is_dir() and d.name.upper().startswith("SDS-"):
+                sz = _dir_size(d)
+                tmp_total += sz
+                folders.append({"name": d.name, "mb": round(sz / 1024 / 1024, 1)})
+    except Exception:
+        pass
+    folders.sort(key=lambda x: -x["mb"])
+    return jsonify({"tmp_mb": round(tmp_total / 1024 / 1024, 1),
+                    "free_gb": round(free_gb, 1) if free_gb is not None else None,
+                    "folders": folders[:20]})
+
+
+@app.post("/api/cleanup")
+def api_cleanup():
+    """Borra los videos (.mp4, etc.) de las carpetas SDS-* en TMP, conservando
+    sidecars (mismo criterio que el bot). Libera espacio; no toca Jira ni Studio."""
+    freed, n = 0, 0
+    try:
+        for d in TMP.iterdir():
+            if d.is_dir() and d.name.upper().startswith("SDS-"):
+                for f in d.glob("*"):
+                    if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                        try:
+                            freed += f.stat().st_size
+                            f.unlink()
+                            n += 1
+                        except Exception:
+                            pass
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "files": n, "freed_mb": round(freed / 1024 / 1024, 1)})
+
+
+@app.get("/api/config")
+def api_config_get():
+    return jsonify({
+        "editable": {k: os.getenv(k) for k in EDITABLE_CONFIG},
+        "readonly": {"POLL_INTERVAL": POLL,
+                     "MAX_JIRA_ATTACH_MB": getattr(bot, "MAX_JIRA_ATTACH_MB", None)},
+    })
+
+
+@app.post("/api/config")
+def api_config_set():
+    body = request.get_json(force=True, silent=True) or {}
+    changed = {}
+    for k in EDITABLE_CONFIG:
+        if k not in body:
+            continue
+        sv = str(body[k]).strip()
+        if not sv.isdigit() or int(sv) <= 0:
+            return jsonify({"ok": False, "error": f"{k} debe ser un entero > 0"}), 400
+        _set_env_var(k, sv)
+        changed[k] = sv
+    if not changed:
+        return jsonify({"ok": False, "error": "nada para cambiar"}), 400
+    restart = _run_launchd("restart")
+    return jsonify({"ok": True, "changed": changed, "restarted": restart["ok"],
+                    "note": "config guardada" + (" y bot reiniciado" if restart["ok"] else "")})
+
+
+@app.post("/api/approve")
+def api_approve():
+    """Aprueba/rechaza el ticket en espera escribiendo .bot_approval.json, que
+    el bot consume dentro de wait_for_ticket_response (no se puede postear 'ok'
+    como bot porque el propio bot ignora mensajes de bots)."""
+    body = request.get_json(force=True, silent=True) or {}
+    decision = (body.get("decision") or "").lower()
+    if decision not in {"ok", "no"}:
+        return jsonify({"ok": False, "error": "decision debe ser 'ok' o 'no'"}), 400
+    aw = _read_json(STATUS_PATH, {}).get("awaiting")
+    if not aw or not aw.get("ts"):
+        return jsonify({"ok": False, "error": "no hay ningún ticket esperando confirmación"}), 409
+    try:
+        APPROVAL_PATH.write_text(json.dumps({"ts": aw["ts"], "decision": decision}))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "decision": decision, "ticket": aw.get("ticket"),
+                    "note": f"el bot lo aplica en ≤15s"})
+
+
 @app.get("/")
 def index():
     return HTML
@@ -382,6 +503,12 @@ HTML = r"""<!DOCTYPE html>
   .toast{position:fixed;bottom:20px;right:20px;background:var(--black);color:#fff;padding:12px 18px;border-radius:10px;
          font-weight:600;opacity:0;transition:.25s;pointer-events:none}
   .toast.show{opacity:1}
+  .cfg{display:flex;flex-direction:column;font-size:.72rem;color:var(--g3);font-weight:600;gap:4px;text-transform:uppercase;letter-spacing:.04em}
+  .cfg input{width:130px;border:1px solid var(--g1);border-radius:8px;padding:7px 9px;font-family:var(--sans);font-size:.95rem}
+  .mrow{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:14px;padding-top:14px;border-top:1px solid var(--g1)}
+  .approvebar{background:var(--coral);color:#fff;border-radius:14px;padding:14px 20px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  .approvebar b{font-weight:700}
+  .btn-white{background:#fff;color:var(--coral)}
   @media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}}
 </style></head>
 <body>
@@ -397,19 +524,33 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="approvebar"></div>
+
   <div class="cards" id="cards"></div>
 
   <div class="panel">
     <h2>Mantenimiento</h2>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-dark" onclick="restartBot()">↻ Reiniciar bot</button>
       <button class="btn btn-ghost" onclick="runHealth()">🩺 Health checks</button>
       <span id="health" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span>
     </div>
-    <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+    <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" class="mrow">
       <textarea id="jwt" placeholder="Pegá el JWT nuevo de Studio (seedtag_jwt de DevTools → Cookies)…"
         style="flex:1;min-width:300px;height:58px;border:1px solid var(--g1);border-radius:9px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical"></textarea>
       <button class="btn btn-coral" onclick="renewJwt()">Renovar JWT + reiniciar</button>
+    </div>
+    <div class="mrow">
+      <button class="btn btn-ghost" onclick="loadDisk()">💾 Disco</button>
+      <span id="disk" class="muted"></span>
+      <button class="btn btn-ghost" onclick="cleanup()">🧹 Limpiar videos de TMP</button>
+    </div>
+    <div class="mrow" style="align-items:flex-end">
+      <label class="cfg">Bitrate ≤30s (Mbps)<input id="BITRATE_SHORT" type="number" min="1"></label>
+      <label class="cfg">Bitrate &gt;30s (Mbps)<input id="BITRATE_LONG" type="number" min="1"></label>
+      <label class="cfg">Umbral duración (s)<input id="DURATION_THRESHOLD" type="number" min="1"></label>
+      <button class="btn btn-coral" onclick="saveConfig()">Guardar config + reiniciar</button>
+      <span id="cfgnote" class="muted"></span>
     </div>
   </div>
 
@@ -458,6 +599,13 @@ function render(s){
   } else if(b.alive&&b.paused){dot='paused';txt='en pausa';}
   else if(b.alive){dot='on';txt='corriendo';}
   document.getElementById('botstate').innerHTML=`<span class="dot ${dot}"></span> ${txt}`+(b.pid?` · PID ${b.pid}`:'');
+  const ab=document.getElementById('approvebar');
+  if(b.awaiting&&b.awaiting.ticket){
+    ab.className='approvebar';
+    ab.innerHTML=`<span>⏳ <b>${b.awaiting.ticket}</b> espera tu confirmación</span>`+
+      `<span style="display:flex;gap:8px"><button class="btn btn-white" onclick="approve('ok')">Aprobar</button>`+
+      `<button class="btn btn-ghost" onclick="approve('no')">Rechazar</button></span>`;
+  } else { ab.className=''; ab.innerHTML=''; }
   document.getElementById('pausebtn').textContent=b.paused?'Reanudar':'Pausar';
   document.getElementById('pausebtn').className='btn '+(b.paused?'btn-coral':'btn-dark');
   document.getElementById('subtitle').textContent=
@@ -544,9 +692,37 @@ async function renewJwt(){
   toast(j.ok?('✓ '+j.note):'✗ '+j.error);
   if(j.ok){ document.getElementById('jwt').value=''; setTimeout(refresh,3500); }
 }
+async function approve(d){
+  const r=await fetch('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:d})});
+  const j=await r.json(); toast(j.ok?`✓ ${d==='ok'?'aprobado':'rechazado'} ${j.ticket||''} — ${j.note||''}`:'✗ '+j.error);
+  setTimeout(refresh,1800);
+}
+async function loadDisk(){
+  document.getElementById('disk').textContent='…';
+  try{ const j=await (await fetch('/api/disk')).json();
+    document.getElementById('disk').textContent=`TMP ${j.tmp_mb} MB · libre ${j.free_gb} GB`+(j.folders.length?` · ${j.folders.length} carpeta(s)`:'');
+  }catch(e){ document.getElementById('disk').textContent='error'; }
+}
+async function cleanup(){
+  if(!confirm('¿Borrar los .mp4 de las carpetas SDS-* en TMP? Conserva sidecars; no toca Jira ni Studio.'))return;
+  const j=await (await fetch('/api/cleanup',{method:'POST'})).json();
+  toast(j.ok?`✓ ${j.files} archivo(s), ${j.freed_mb} MB liberados`:'✗ '+j.error); loadDisk();
+}
+async function loadConfig(){
+  try{ const j=await (await fetch('/api/config')).json();
+    for(const k in j.editable){const el=document.getElementById(k); if(el)el.value=j.editable[k]||'';}
+  }catch(e){}
+}
+async function saveConfig(){
+  if(!confirm('¿Guardar la config y reiniciar el bot?'))return;
+  const body={}; ['BITRATE_SHORT','BITRATE_LONG','DURATION_THRESHOLD'].forEach(k=>{body[k]=document.getElementById(k).value;});
+  const j=await (await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  document.getElementById('cfgnote').textContent=j.ok?('✓ '+(j.note||'')):'✗ '+j.error;
+  if(j.ok)setTimeout(()=>{refresh();loadConfig();},3500);
+}
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),3200); }
-refresh(); setInterval(refresh,5000);
+refresh(); loadConfig(); loadDisk(); setInterval(refresh,5000);
 </script>
 </body></html>
 """

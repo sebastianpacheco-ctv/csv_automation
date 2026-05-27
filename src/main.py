@@ -124,6 +124,44 @@ def _add_pending_studio(path: Path, entry: dict) -> None:
     _save_pending_studio(path, items)
 
 
+# ── Canal de control (dashboard) ───────────────────────────────────────────────
+# El dashboard escribe en tmp/.bot_control.json: {"paused": bool, "commands": [...]}.
+# El bot lo lee al inicio de cada loop, ejecuta los comandos pendientes y los
+# borra. Si el archivo no existe, es un no-op (cero acoplamiento si no hay
+# dashboard). El bot publica su estado en tmp/.bot_status.json para que el
+# dashboard muestre liveness sin depender de launchctl.
+
+def _load_control(path: Path) -> dict:
+    if not path.exists():
+        return {"paused": False, "commands": []}
+    try:
+        d = json.loads(path.read_text())
+        d.setdefault("paused", False)
+        d.setdefault("commands", [])
+        return d
+    except Exception as e:
+        log.warning(f"No se pudo leer control {path}: {e}")
+        return {"paused": False, "commands": []}
+
+
+def _save_control(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        log.warning(f"No se pudo escribir control {path}: {e}")
+
+
+def _write_bot_status(path: Path, **fields) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        base = {"pid": os.getpid(), "updated_at": datetime.now(timezone.utc).isoformat()}
+        base.update(fields)
+        path.write_text(json.dumps(base, indent=2))
+    except Exception as e:
+        log.warning(f"No se pudo escribir status {path}: {e}")
+
+
 def _process_pending_studio(studio, jira, slack, pending_path: Path,
                              max_age_hours: float = 2.0) -> None:
     """Segunda pasada: para cada entry pendiente, consulta el estado del video
@@ -947,6 +985,15 @@ def main():
     pending_count = len(_load_pending_studio(pending_studio_path))
     if pending_count:
         log.info(f"Pending Studio: {pending_count} tickets esperando COMPLETED")
+
+    # Canal de control + estado para el dashboard.
+    canceled_path = tmp_root / ".canceled_tickets.json"
+    control_path = tmp_root / ".bot_control.json"
+    status_path = tmp_root / ".bot_status.json"
+    started_at = datetime.now(timezone.utc).isoformat()
+    paused = _load_control(control_path).get("paused", False)
+    if paused:
+        log.info("Bot arranca en PAUSA (control file). Reanudar desde el dashboard.")
     log.info(f"Polling Jira cada {POLL_INTERVAL}s...")
 
     while True:
@@ -960,6 +1007,39 @@ def main():
                         f"Extrae uno nuevo y actualiza STUDIO_JWT_COOKIE o el sidecar `.studio_jwt`."
                     )
                 last_studio_heartbeat = time.monotonic()
+
+            # ── Comandos del dashboard (control file) ─────────────────────
+            ctrl = _load_control(control_path)
+            paused = ctrl.get("paused", False)
+            cmds = ctrl.get("commands", [])
+            if cmds:
+                canceled = _load_canceled(canceled_path)
+                for cmd in cmds:
+                    action = (cmd.get("action") or "").lower()
+                    key = (cmd.get("key") or "").upper()
+                    try:
+                        if action in ("reprocess", "reactivate") and key:
+                            canceled.discard(key)
+                            seen_tickets.discard(key)
+                            log.info(f"Dashboard: {action} {key} → se reprocesa en el próximo poll")
+                        elif action == "cancel" and key:
+                            canceled.add(key)
+                            seen_tickets.add(key)
+                            log.info(f"Dashboard: cancel {key}")
+                        elif action == "pause":
+                            paused = True
+                            log.info("Dashboard: bot PAUSADO")
+                        elif action == "resume":
+                            paused = False
+                            log.info("Dashboard: bot REANUDADO")
+                        else:
+                            log.warning(f"Dashboard: comando desconocido {cmd}")
+                    except Exception as ce:
+                        log.warning(f"Dashboard: error ejecutando {cmd}: {ce}")
+                _save_canceled(canceled_path, canceled)
+                _save_seen_tickets(seen_tickets_path, seen_tickets)
+                # Comandos ejecutados → limpiar, persistir el estado de pausa.
+                _save_control(control_path, {"paused": paused, "commands": []})
 
             # Segunda pasada: revisar tickets cuyo video en Studio quedo
             # PROGRESSING al terminar el flujo principal; si llego a COMPLETED,
@@ -1021,13 +1101,24 @@ def main():
             except Exception as e:
                 log.warning(f"Error leyendo canal para comandos: {e}")
 
-            # Polling Jira
-            issues = jira.get_omniscreen_video_issues()
-            new = [i for i in issues if i["key"] not in seen_tickets and is_csv_ticket(i)]
-            for issue in new:
-                seen_tickets.add(issue["key"])
-                _save_seen_tickets(seen_tickets_path, seen_tickets)
-                process_ticket(issue, jira, slack, converter, studio, filestage, gcs=gcs)
+            # Polling Jira (salvo que el dashboard lo haya pausado)
+            queue_count = None
+            if not paused:
+                issues = jira.get_omniscreen_video_issues()
+                queue_count = len(issues)
+                new = [i for i in issues if i["key"] not in seen_tickets and is_csv_ticket(i)]
+                for issue in new:
+                    seen_tickets.add(issue["key"])
+                    _save_seen_tickets(seen_tickets_path, seen_tickets)
+                    process_ticket(issue, jira, slack, converter, studio, filestage, gcs=gcs)
+
+            # Estado para el dashboard (liveness + métricas básicas).
+            _write_bot_status(
+                status_path, paused=paused, started_at=started_at,
+                last_poll=datetime.now(timezone.utc).isoformat(),
+                queue_count=queue_count, seen=len(seen_tickets),
+                pending_studio=len(_load_pending_studio(pending_studio_path)),
+            )
 
         except Exception as e:
             log.error(f"Error en loop: {e}", exc_info=True)

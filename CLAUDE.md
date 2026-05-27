@@ -335,4 +335,17 @@ Descarga el adjunto de SDS-21631, convierte, sube a Studio bajo el bot, crea el 
 - `.canceled_tickets.json` — tickets cancelados con `no` (reactivables).
 - `.pending_studio.json` — videos esperando COMPLETED (segunda pasada).
 - `.last_tmp_check` — timestamp del último aviso de carpetas viejas (>30 días).
+- `.bot_control.json` — canal de control del dashboard: `{"paused": bool, "commands": [...]}`. El bot lo lee al inicio de cada loop, ejecuta los comandos (reprocess/cancel/reactivate/pause/resume) y los borra. Si no existe → no-op.
+- `.bot_status.json` — estado que publica el bot cada loop (pid, last_poll, paused, queue_count, seen, pending_studio). Lo lee el dashboard para liveness.
 - `<TICKET>/.studio_video_id` — idempotencia del upload por ticket.
+
+## Dashboard de administración (`src/dashboard.py`)
+Web liviana (Flask) para ver y controlar el bot sin tocar archivos ni terminal.
+```bash
+source venv/bin/activate
+python3 src/dashboard.py        # → http://127.0.0.1:8787 (DASHBOARD_HOST/PORT configurables)
+```
+- **Ve:** estado del bot (vivo/pausado, PID, último poll), cola 1597 en vivo, sidecars (seen/canceled/pending_studio), salud del JWT de Studio, tail del log.
+- **Controla:** reprocesar / cancelar / reactivar un ticket, pausar/reanudar el polling. Escribe en `.bot_control.json`; el bot lo aplica en su próximo loop (≤60s).
+- **Acoplamiento solo por archivos** (control + status). Si el dashboard no corre, el bot funciona igual. El dashboard limpia sus propios handlers de logging al importar `main` para no rotar el log del bot.
+- **Pendiente (v2):** aprobar/rechazar desde el dashboard (postear `ok`/`no` al hilo de Slack) + ver/editar config. En GCP: mismo archivo detrás de gunicorn + auth (IAP).

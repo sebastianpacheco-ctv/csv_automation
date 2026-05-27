@@ -30,10 +30,23 @@ URL_PATTERN = re.compile(
 
 # Links de servicios de transferencia (WeTransfer, Drive, Dropbox, etc.)
 TRANSFER_DOMAINS = re.compile(
-    r"https?://(?:we\.tl|wetransfer\.com|drive\.google\.com|dropbox\.com"
+    r"https?://(?:we\.tl|wetransfer\.com|drive\.google\.com"
+    r"|drive\.usercontent\.google\.com|dropbox\.com"
     r"|frame\.io|app\.frame\.io|vimeo\.com|sharepoint\.com|1drv\.ms"
     r"|mediafire\.com|transfer\.sh|hightail\.com|smash\.pm"
     r"|sendgb\.com|send\.tresorit\.com)/[^\s\]>\"']+",
+    re.IGNORECASE
+)
+
+# Cualquier link http(s) (para el fallback generico de servicios desconocidos)
+ANY_URL = re.compile(r"https?://[^\s\]>\"')]+", re.IGNORECASE)
+
+# Dominios que NUNCA son el video (specs, hojas de calculo, figma, jira mismo).
+# Se excluyen del fallback generico para no bajar el archivo equivocado.
+NON_VIDEO_DOMAINS = re.compile(
+    r"(?:design\.seedtag\.com|docs\.google\.com|sheets\.google\.com"
+    r"|figma\.com|atlassian\.net|seedtag\.atlassian|confluence"
+    r"|notion\.so|slack\.com|loom\.com/share/folder)",
     re.IGNORECASE
 )
 
@@ -201,25 +214,37 @@ class JiraClient:
         for comment in reversed(fields.get("comment", {}).get("comments", [])):
             texts.append(self._extract_text(comment.get("body", {})))
 
-        for text in texts:
-            # 1. Link directo a archivo de video
-            match = URL_PATTERN.search(text)
-            if match:
-                url = match.group(0)
-                name = Path(urlparse(url).path).name or "video.mp4"
-                log.info(f"Link directo encontrado: {url}")
-                return self._download_url(url, dest_dir / name)
+        full_text = " ".join(texts)
 
-            # 2. Link de servicio de transferencia (WeTransfer, Drive, etc.)
-            match = TRANSFER_DOMAINS.search(text)
-            if match:
-                url = match.group(0)
-                log.info(f"Link de servicio encontrado: {url}")
-                # Para servicios externos notificamos en Slack pero no podemos
-                # descargar automáticamente (requieren autenticación/click humano)
-                return self._handle_transfer_link(url, dest_dir)
+        # 1. Link directo a archivo de video (.mp4/.mov/...)
+        match = URL_PATTERN.search(full_text)
+        if match:
+            url = match.group(0)
+            name = Path(urlparse(url).path).name or "video.mp4"
+            log.info(f"Link directo encontrado: {url}")
+            return self._download_url(url, dest_dir / name)
 
-        log.warning("No se encontró vídeo adjunto ni link en el ticket")
+        # 2. Link de servicio conocido (WeTransfer, Drive, Dropbox, etc.)
+        match = TRANSFER_DOMAINS.search(full_text)
+        if match:
+            url = match.group(0)
+            log.info(f"Link de servicio conocido: {url}")
+            return self._handle_transfer_link(url, dest_dir)
+
+        # 3. Fallback generico: cualquier otro link http(s) que NO sea un
+        # dominio conocido de no-video (specs, sheets, figma, jira). Best-effort:
+        # intenta descarga directa y, si es HTML, scrapea la pagina buscando
+        # URLs de video.
+        for m in ANY_URL.finditer(full_text):
+            url = m.group(0).rstrip(".,);]")
+            if NON_VIDEO_DOMAINS.search(url):
+                continue
+            log.info(f"Link desconocido — fallback generico: {url}")
+            result = self._handle_generic_link(url, dest_dir)
+            if result:
+                return result
+
+        log.warning("No se encontró vídeo adjunto ni link descargable en el ticket")
         return None
 
     def find_transfer_link(self, issue: dict) -> str | None:
@@ -260,6 +285,64 @@ class JiraClient:
         except Exception as e:
             log.warning(f"No se pudo descargar desde {url}: {e}")
             return None
+
+    def _handle_generic_link(self, url: str, dest_dir: Path) -> Path | None:
+        """Fallback para servicios desconocidos. Best-effort:
+        1. Intenta descarga directa (si Content-Type es video/binario).
+        2. Si la respuesta es HTML, scrapea la pagina buscando URLs de video
+           (og:video meta, tags <video>/<source>, links .mp4/.mov directos).
+        Devuelve None si no encuentra nada descargable.
+        """
+        import re
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0 Safari/537.36",
+        })
+        try:
+            r = session.get(url, stream=True, timeout=60, allow_redirects=True)
+        except Exception as e:
+            log.warning(f"Generic link: GET fallo {url[:100]}: {e}")
+            return None
+
+        ct = r.headers.get("Content-Type", "")
+        # Caso 1: la URL ya es el archivo
+        if "video" in ct or "octet-stream" in ct:
+            return self._stream_to_file(r.url, dest_dir, session=session)
+
+        # Caso 2: HTML — scrapear por URLs de video
+        if "text/html" not in ct:
+            return None
+        try:
+            html = r.text
+        except Exception:
+            return None
+
+        candidates = []
+        # og:video / og:video:url / og:video:secure_url
+        for m in re.finditer(r'<meta[^>]+property=["\']og:video(?::secure_url|:url)?["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE):
+            candidates.append(m.group(1))
+        # <video src> y <source src>
+        for m in re.finditer(r'<(?:video|source)[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
+            candidates.append(m.group(1))
+        # Links directos .mp4/.mov/etc en el HTML
+        for m in URL_PATTERN.finditer(html):
+            candidates.append(m.group(0))
+
+        # Probar cada candidato (resolviendo URLs relativas)
+        from urllib.parse import urljoin
+        seen = set()
+        for c in candidates:
+            full = urljoin(r.url, c)
+            if full in seen:
+                continue
+            seen.add(full)
+            log.info(f"Generic link: candidato de video en pagina: {full[:120]}")
+            got = self._stream_to_file(full, dest_dir, session=session)
+            if got:
+                return got
+        log.warning(f"Generic link: no encontre video descargable en {url[:100]}")
+        return None
 
     def _stream_to_file(self, url: str, dest_dir: Path, session=None,
                          fallback_name: str = "video_from_link.mp4") -> Path | None:

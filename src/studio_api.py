@@ -326,7 +326,7 @@ class StudioAPIClient:
     @staticmethod
     def build_csv_ctv_ad_template(video_id: str, name: str, formats: list,
                                   country: str = None, category: str = None,
-                                  configuration: str = "animation",
+                                  configuration: str = "none",
                                   metatags: list = None) -> dict:
         """
         Construye el AdTemplateInputType para un creative CSV-CTV.
@@ -342,7 +342,8 @@ class StudioAPIClient:
                      type, bitrate, url}.
             country: valor de getCreativeDimensions().countries (e.g. 'usa')
             category: valor de getCreativeDimensions().categories (e.g. 'automotive')
-            configuration: por defecto 'animation' (como en la referencia)
+            configuration: por defecto 'none' (correcto para CSV-CTV; la
+                           referencia traía 'animation' pero era incorrecto)
             metatags: por defecto ['ctv-express']
         """
         if metatags is None:
@@ -507,10 +508,10 @@ class StudioAPIClient:
         try:
             self.set_creative_dimensions(
                 creative_id, country=country, category=category,
-                configuration="animation",
+                configuration="none",
             )
             log.info(f"Studio API: dimensions seteadas en {creative_id} "
-                     f"(country={country}, category={category}, config=animation)")
+                     f"(country={country}, category={category}, config=none)")
         except Exception as e:
             log.warning(f"Studio API: no se pudieron setear dimensions en "
                         f"{creative_id}: {e}")

@@ -55,6 +55,7 @@ CANCELED_PATH = TMP / ".canceled_tickets.json"
 PENDING_PATH = TMP / ".pending_studio.json"
 STATUS_PATH = TMP / ".bot_status.json"
 CONTROL_PATH = TMP / ".bot_control.json"
+HISTORY_PATH = TMP / ".bot_history.json"
 JWT_PATH = TMP / ".studio_jwt"
 POLL = getattr(bot, "POLL_INTERVAL", 60)
 LAUNCHD = ROOT / "scripts" / "launchd.sh"
@@ -125,12 +126,13 @@ def _jwt_days_left(jwt: str):
 
 
 def _is_alive(status: dict) -> bool:
-    """Vivo si el último poll fue hace menos de ~3 ciclos."""
-    lp = status.get("last_poll")
-    if not lp:
+    """Vivo si el último write de estado (updated_at, que refresca tanto el loop
+    como el heartbeat _set_activity) fue hace menos de ~3 ciclos."""
+    ts = status.get("updated_at") or status.get("last_poll")
+    if not ts:
         return False
     try:
-        dt = datetime.fromisoformat(lp)
+        dt = datetime.fromisoformat(ts)
         age = (datetime.now(timezone.utc) - dt).total_seconds()
         return age < POLL * 3 + 30
     except Exception:
@@ -190,6 +192,8 @@ def _build_state() -> dict:
             "pid": status.get("pid"),
             "started_at": status.get("started_at"),
             "last_poll": status.get("last_poll"),
+            "updated_at": status.get("updated_at"),
+            "current": status.get("current"),
             "queue_count": status.get("queue_count"),
             "seen": len(seen),
             "pending_studio": len(pending),
@@ -198,6 +202,7 @@ def _build_state() -> dict:
         "queue": rows,
         "pending_studio": pending,
         "canceled": sorted(canceled),
+        "history": list(reversed(_read_json(HISTORY_PATH, [])))[:25],
         "jwt_days": _jwt_days_left(_read_text(JWT_PATH)),
         "log": _log_tail(60),
         "now": datetime.now(timezone.utc).isoformat(),
@@ -421,6 +426,12 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="panel">
+    <h2>Historial de procesado</h2>
+    <table><thead><tr><th>Ticket</th><th>Resultado</th><th>Detalle</th><th>Cuándo</th><th></th></tr></thead>
+    <tbody id="history"><tr><td colspan="5" class="muted">cargando…</td></tr></tbody></table>
+  </div>
+
+  <div class="panel">
     <h2>Log reciente</h2>
     <div class="log" id="log">—</div>
   </div>
@@ -440,7 +451,11 @@ function fmtAge(iso){ if(!iso)return '—'; const s=(Date.now()-new Date(iso))/1
 function render(s){
   const b=s.bot;
   let dot='off',txt='offline';
-  if(b.alive&&b.paused){dot='paused';txt='en pausa';}
+  const age=b.updated_at?(Date.now()-new Date(b.updated_at))/1000:1e9;
+  if(b.current){
+    if(age>1800){dot='paused';txt='ocupado (¿colgado?): '+b.current;}
+    else{dot='on';txt='ocupado · '+b.current;}
+  } else if(b.alive&&b.paused){dot='paused';txt='en pausa';}
   else if(b.alive){dot='on';txt='corriendo';}
   document.getElementById('botstate').innerHTML=`<span class="dot ${dot}"></span> ${txt}`+(b.pid?` · PID ${b.pid}`:'');
   document.getElementById('pausebtn').textContent=b.paused?'Reanudar':'Pausar';
@@ -475,6 +490,23 @@ function render(s){
     pt.innerHTML='<thead><tr><th>Ticket</th><th>video_id</th><th>desde</th></tr></thead><tbody>'+
       s.pending_studio.map(p=>`<tr><td class="key">${p.ticket_key||'?'}</td><td>${p.video_id||''}</td><td>${(p.created_at||'').slice(0,16)}</td></tr>`).join('')+'</tbody>';
   } else { pe.style.display='block'; pt.innerHTML=''; }
+
+  const RES={ok:['b-csv','OK'],partial:['b-new','Parcial'],error:['b-cancel','Error'],
+    no_video:['b-cancel','Sin video'],timeout:['b-new','Timeout'],canceled:['b-seen','Cancelado'],
+    skipped_qr:['b-seen','QR manual']};
+  document.getElementById('history').innerHTML = (s.history&&s.history.length)? s.history.map(h=>{
+    const r=RES[h.result]||['b-seen',h.result];
+    let detail='';
+    if(h.creatives){ const ok=h.creatives.filter(c=>c.url).length;
+      detail=`${ok}/${h.creatives.length} creatives`;
+      const na=h.creatives.filter(c=>c.url&&!c.attached).length; if(na)detail+=` · ${na} sin adjuntar`;
+    } else if(h.error){ detail=h.error; }
+    const failed=['error','partial','no_video','timeout'].includes(h.result);
+    const act=failed?`<button class="btn btn-coral mini" onclick="cmd('reprocess','${h.key}')">Reintentar</button>`:'';
+    return `<tr><td class="key">${h.key}</td><td><span class="badge ${r[0]}">${r[1]}</span></td>
+      <td class="muted" title="${(detail||'').replace(/"/g,'&quot;')}">${(detail||'—').slice(0,80)}</td>
+      <td class="muted">${fmtAge(h.at)}</td><td><div class="acts">${act}</div></td></tr>`;
+  }).join('') : '<tr><td colspan="5" class="muted">sin historial aún</td></tr>';
 
   document.getElementById('log').innerHTML = s.log.map(l=>{
     const e=l.replace(/&/g,'&amp;').replace(/</g,'&lt;');

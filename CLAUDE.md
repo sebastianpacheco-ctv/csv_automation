@@ -336,7 +336,8 @@ Descarga el adjunto de SDS-21631, convierte, sube a Studio bajo el bot, crea el 
 - `.pending_studio.json` — videos esperando COMPLETED (segunda pasada).
 - `.last_tmp_check` — timestamp del último aviso de carpetas viejas (>30 días).
 - `.bot_control.json` — canal de control del dashboard: `{"paused": bool, "commands": [...]}`. El bot lo lee al inicio de cada loop, ejecuta los comandos (reprocess/cancel/reactivate/pause/resume) y los borra. Si no existe → no-op.
-- `.bot_status.json` — estado que publica el bot cada loop (pid, last_poll, paused, queue_count, seen, pending_studio). Lo lee el dashboard para liveness.
+- `.bot_status.json` — estado que publica el bot (pid, last_poll, updated_at, paused, queue_count, seen, pending_studio, **current**=actividad en vivo). `current` lo refresca `_set_activity` durante el procesado (heartbeat); el dashboard lo usa para mostrar "ocupado · paso" en vez de "offline".
+- `.bot_history.json` — historial de tickets procesados (últimos 60: result ok/partial/error/no_video/timeout/canceled/skipped_qr, creatives, error). Lo escribe `_record_history` en cada salida de `process_ticket`; el dashboard lo muestra con botón Reintentar para los fallidos.
 - `<TICKET>/.studio_video_id` — idempotencia del upload por ticket.
 
 ## Dashboard de administración (`src/dashboard.py`)
@@ -349,4 +350,5 @@ python3 src/dashboard.py        # → http://127.0.0.1:8787 (DASHBOARD_HOST/PORT
 - **Controla:** reprocesar / cancelar / reactivar un ticket, pausar/reanudar el polling. Escribe en `.bot_control.json`; el bot lo aplica en su próximo loop (≤60s).
 - **Mantenimiento (Tanda 1):** **renovar el JWT de Studio** (pegar token → escribe `.studio_jwt` + reinicia el bot), **Reiniciar bot** (`POST /api/restart` → `launchd.sh restart`), **Health checks** (`GET /api/health`: ffmpeg/Slack/Jira/Studio/JWT en verde-rojo).
 - **Acoplamiento solo por archivos** (control + status). Si el dashboard no corre, el bot funciona igual. El dashboard limpia sus propios handlers de logging al importar `main` para no rotar el log del bot.
-- **Pendiente (Tanda 2):** troubleshooting de tickets (historial + fallidos con motivo + reintentar) y heartbeat/actividad en vivo (requieren que el bot emita más estado). **Tanda 3:** disco/limpieza, editar config, aprobar/rechazar desde el panel. En GCP: mismo archivo detrás de gunicorn + auth (IAP).
+- **Troubleshooting (Tanda 2):** **actividad en vivo / heartbeat** (qué ticket y paso corre ahora — el bot escribe `current` en `.bot_status.json`; el panel muestra "ocupado · paso" y "¿colgado?" si lleva >30 min) + **historial de procesado** (`.bot_history.json`: resultado, creatives, error) con **botón Reintentar** en los fallidos (reusa el comando `reprocess`).
+- **Pendiente (Tanda 3):** disco/limpieza de carpetas viejas, ver/editar config, aprobar/rechazar desde el panel. En GCP: mismo archivo detrás de gunicorn + auth (IAP).

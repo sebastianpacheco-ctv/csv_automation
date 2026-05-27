@@ -164,6 +164,45 @@ def _write_bot_status(path: Path, **fields) -> None:
         log.warning(f"No se pudo escribir status {path}: {e}")
 
 
+# Rutas de estado/historial para el dashboard (las setea main()).
+_STATUS_PATH = None
+_HISTORY_PATH = None
+
+
+def _set_activity(text) -> None:
+    """Heartbeat de actividad para el dashboard: setea el campo 'current' del
+    status y refresca updated_at. text=None → idle. Hace merge para no pisar el
+    resto del status que escribe el loop. Permite que el dashboard muestre
+    'procesando SDS-X · paso Y' en vez de 'offline' durante tareas largas."""
+    if _STATUS_PATH is None:
+        return
+    try:
+        data = {}
+        if _STATUS_PATH.exists():
+            data = json.loads(_STATUS_PATH.read_text())
+        data["current"] = text
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _STATUS_PATH.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
+
+
+def _record_history(entry: dict, cap: int = 60) -> None:
+    """Anexa una entrada al historial de tickets (.bot_history.json), capado a
+    `cap`. Lo lee el dashboard para mostrar resultados, fallidos y reintentar."""
+    if _HISTORY_PATH is None:
+        return
+    try:
+        hist = []
+        if _HISTORY_PATH.exists():
+            hist = json.loads(_HISTORY_PATH.read_text())
+        entry.setdefault("at", datetime.now(timezone.utc).isoformat())
+        hist.append(entry)
+        _HISTORY_PATH.write_text(json.dumps(hist[-cap:], indent=2))
+    except Exception as e:
+        log.warning(f"No se pudo escribir historial: {e}")
+
+
 def _process_pending_studio(studio, jira, slack, pending_path: Path,
                              max_age_hours: float = 2.0) -> None:
     """Segunda pasada: para cada entry pendiente, consulta el estado del video
@@ -633,9 +672,13 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
              f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
+    started = datetime.now(timezone.utc).isoformat()
+    _set_activity(f"{ticket_key}: revisando")
 
     # ── 0. QR check (ver _handle_qr_skip). Si hay QR, no se procesa el video.
     if _handle_qr_skip(ticket_key, ticket_url, jira, slack):
+        _record_history({"key": ticket_key, "summary": summary,
+                         "result": "skipped_qr", "started": started})
         return
 
     # ── 1. Pre-confirmacion: descargar TODOS los videos + plan por video ──
@@ -656,6 +699,9 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         else:
             slack.send_message(f"❌ *{ticket_key}*: No se encontro video adjunto ni link.")
         log.warning(f"{ticket_key}: sin video, ticket saltado (queda en seen_tickets)")
+        _record_history({"key": ticket_key, "summary": summary, "result": "no_video",
+                         "started": started,
+                         "error": f"no se pudo bajar el video; link: {transfer_url or '—'}"})
         return
 
     canonical_stem = _build_canonical_filename(summary)
@@ -682,9 +728,12 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         slack.send_thread_message(msg["ts"], text)
 
     # ── 2. Esperar respuesta en el hilo (ok / no) ─────────────────────────
+    _set_activity(f"{ticket_key}: esperando 'ok' en Slack")
     response = slack.wait_for_ticket_response(msg["channel"], msg["ts"], timeout=3600)
     if response is None:
         post_thread(f"⏰ *{ticket_key}* no confirmado en 1 hora. Saltado.")
+        _record_history({"key": ticket_key, "summary": summary,
+                         "result": "timeout", "started": started})
         return
     if response.get("action") == "cancel":
         # Marcar como cancelado para permitir reactivacion explicita despues
@@ -697,6 +746,8 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             f"Si fue por error, escribi `reactivar {ticket_key}` en el canal y "
             f"el bot lo retomara en el siguiente poll."
         )
+        _record_history({"key": ticket_key, "summary": summary,
+                         "result": "canceled", "started": started})
         return
 
     post_thread(f"✅ Confirmado. Procesando *{ticket_key}*...")
@@ -734,6 +785,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                "creative_id": None, "attached_filename": None,
                "attach_skip_reason": None, "studio_error": None, "gcs_url": None}
 
+        _set_activity(f"{ticket_key}: [{idx}/{total}] convirtiendo {raw_path.name}")
         post_thread(f"{lbl}📥 `{raw_path.name}` — convirtiendo...")
         out = converter.convert(raw_path)
         if not out:
@@ -752,6 +804,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         post_thread(f"{lbl}🎬 Convertido: `{out.name}` — {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
 
         # Studio
+        _set_activity(f"{ticket_key}: [{idx}/{total}] subiendo a Studio")
         try:
             sres = studio.process_video_to_creative(
                 file_path=out, ticket_title=summary, country=country, category=category,
@@ -826,6 +879,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 
     try:
         results = [_process_one(vp, i) for i, vp in enumerate(video_plans, start=1)]
+        _set_activity(f"{ticket_key}: finalizando (comentario + transición)")
 
         # ── Comentario agregado en Jira (todos los creatives) ──
         jira.add_comment_adf(ticket_key, _build_done_comment_multi(results, total))
@@ -873,6 +927,16 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         # ── Cleanup: borrar .mp4 (raw + convertidos). Conservar sidecars. ──
         _cleanup_ticket_files(tmp_dir)
 
+        # ── Historial para el dashboard ──
+        creatives = [{"name": r["canonical"], "creative_id": r.get("creative_id"),
+                      "url": r.get("studio_url"),
+                      "attached": bool(r.get("attached_filename")),
+                      "error": r.get("studio_error") or r.get("attach_skip_reason")}
+                     for r in results]
+        result = "ok" if ok_count == total else ("partial" if ok_count else "error")
+        _record_history({"key": ticket_key, "summary": summary, "result": result,
+                         "started": started, "creatives": creatives})
+
     except Exception as e:
         # Regla del equipo: el bot NUNCA vuelve a Triage ni a Brand. Si algo
         # falla durante el proceso, se deja el ticket en el estado actual
@@ -880,6 +944,8 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         # si si lo hizo) y se avisa en Slack + comentario en Jira. Un humano
         # decide que hacer.
         log.error(f"Error procesando {ticket_key}: {e}", exc_info=True)
+        _record_history({"key": ticket_key, "summary": summary, "result": "error",
+                         "started": started, "error": f"{type(e).__name__}: {e}"})
         # Aviso doble: en hilo (contexto del ticket) y en main (visibilidad
         # critica — fallo total del flujo).
         post_thread(
@@ -979,10 +1045,13 @@ def main():
     if pending_count:
         log.info(f"Pending Studio: {pending_count} tickets esperando COMPLETED")
 
-    # Canal de control + estado para el dashboard.
+    # Canal de control + estado + historial para el dashboard.
     canceled_path = tmp_root / ".canceled_tickets.json"
     control_path = tmp_root / ".bot_control.json"
     status_path = tmp_root / ".bot_status.json"
+    history_path = tmp_root / ".bot_history.json"
+    global _STATUS_PATH, _HISTORY_PATH
+    _STATUS_PATH, _HISTORY_PATH = status_path, history_path
     started_at = datetime.now(timezone.utc).isoformat()
     paused = _load_control(control_path).get("paused", False)
     if paused:
@@ -1111,6 +1180,7 @@ def main():
                 last_poll=datetime.now(timezone.utc).isoformat(),
                 queue_count=queue_count, seen=len(seen_tickets),
                 pending_studio=len(_load_pending_studio(pending_studio_path)),
+                current=None,
             )
 
         except Exception as e:

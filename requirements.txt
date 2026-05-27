@@ -2,3 +2,7 @@ requests>=2.31.0
 slack-sdk>=3.27.0
 playwright>=1.44.0
 python-dotenv>=1.0.0
+
+# Opcional — solo necesario si se activa GCS (GCS_BUCKET seteada). Instalar
+# en la VM de GCP al migrar: pip install google-cloud-storage
+# google-cloud-storage>=2.10.0

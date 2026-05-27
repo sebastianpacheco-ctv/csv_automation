@@ -361,6 +361,13 @@ def _build_done_comment_multi(results: list[dict], total: int) -> dict:
                 {"type": "text", "text": f"{label}⚠️ .mp4 no adjuntado: "},
                 {"type": "text", "text": r["attach_skip_reason"], "marks": [{"type": "code"}]},
             ]})
+        # Linea de backup GCS (si esta activo)
+        if r.get("gcs_url"):
+            content.append({"type": "paragraph", "content": [
+                {"type": "text", "text": f"{label}Backup (GCS): "},
+                {"type": "text", "text": r["gcs_url"],
+                 "marks": [{"type": "link", "attrs": {"href": r["gcs_url"]}}]},
+            ]})
 
     content.append({"type": "paragraph", "content": [
         {"type": "text",
@@ -545,7 +552,7 @@ def _format_deadline(deadline_raw: str) -> str:
 
 def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                    converter: VideoConverter, studio: StudioAPIClient,
-                   filestage: FilestageUploader):
+                   filestage: FilestageUploader, gcs=None):
 
     ticket_key = issue["key"]
     ticket_url = f"{os.getenv('JIRA_BASE_URL')}/browse/{ticket_key}"
@@ -717,7 +724,7 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
         canonical = vplan["canonical"]
         res = {"canonical": canonical, "studio_url": None, "video_id": None,
                "creative_id": None, "attached_filename": None,
-               "attach_skip_reason": None, "studio_error": None}
+               "attach_skip_reason": None, "studio_error": None, "gcs_url": None}
 
         post_thread(f"{lbl}📥 `{raw_path.name}` — convirtiendo...")
         out = converter.convert(raw_path)
@@ -811,6 +818,17 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                     attach_skip = f"{type(att_err).__name__}: {att_err}"
                 post_thread(f"{lbl}⚠️ Error al adjuntar `{out.name}`: `{attach_skip}`")
         res["attach_skip_reason"] = attach_skip
+
+        # ── GCS (opcional, inerte si gcs es None) ─────────────────────────
+        # Sube el .mp4 convertido a GCS y devuelve un link permanente para
+        # el comentario de Jira. Solo activo si GCS_BUCKET esta seteada.
+        if gcs is not None:
+            gcs_url = gcs.upload(out, ticket_key)
+            if gcs_url:
+                res["gcs_url"] = gcs_url
+                post_thread(f"{lbl}☁️ GCS ✓ — <{gcs_url}|backup del .mp4>")
+            else:
+                post_thread(f"{lbl}⚠️ No se pudo subir el .mp4 a GCS (ver logs).")
         return res
 
     try:
@@ -924,6 +942,13 @@ def main():
         on_refresh_failure=slack.send_message,
     )
 
+    # GCS uploader — inerte si GCS_BUCKET no esta seteada (caso burn-in local).
+    # Se activa al migrar a GCP seteando GCS_BUCKET en el entorno de la VM.
+    import gcs_uploader
+    gcs = gcs_uploader.from_env()
+    if gcs:
+        log.info(f"GCS activado: bucket={gcs.bucket_name} prefix={gcs.prefix} public={gcs.public}")
+
     # Asignar callback de status para responder durante la espera del ok
     slack.status_callback = lambda: get_queue_status(jira)
 
@@ -1020,7 +1045,7 @@ def main():
             for issue in new:
                 seen_tickets.add(issue["key"])
                 _save_seen_tickets(seen_tickets_path, seen_tickets)
-                process_ticket(issue, jira, slack, converter, studio, filestage)
+                process_ticket(issue, jira, slack, converter, studio, filestage, gcs=gcs)
 
         except Exception as e:
             log.error(f"Error en loop: {e}", exc_info=True)

@@ -248,18 +248,30 @@ class JiraClient:
         return None
 
     def find_transfer_link(self, issue: dict) -> str | None:
-        """Devuelve el primer link de servicio de transferencia encontrado en el ticket."""
+        """Devuelve el primer link descargable encontrado en el ticket
+        (directo, servicio conocido, o cualquier link no-excluido). Sirve
+        para el aviso en Slack cuando el bot NO pudo bajar: asi el equipo ve
+        de donde sacar el video aunque sea un servicio desconocido.
+        """
         fields = issue.get("fields", {})
         texts = [self._extract_text(fields.get("description") or {})]
+        for key, val in fields.items():
+            if key.startswith("customfield_") and isinstance(val, str) and val:
+                texts.append(val)
+            elif key.startswith("customfield_") and isinstance(val, dict):
+                texts.append(self._extract_text(val))
         for comment in fields.get("comment", {}).get("comments", []):
             texts.append(self._extract_text(comment.get("body", {})))
-        for text in texts:
-            match = TRANSFER_DOMAINS.search(text)
-            if match:
-                return match.group(0)
-            match = URL_PATTERN.search(text)
-            if match:
-                return match.group(0)
+        full = " ".join(texts)
+        # Prioridad: link directo > servicio conocido > cualquier link no-excluido
+        for rx in (URL_PATTERN, TRANSFER_DOMAINS):
+            m = rx.search(full)
+            if m:
+                return m.group(0).rstrip(".,);]")
+        for m in ANY_URL.finditer(full):
+            url = m.group(0).rstrip(".,);]")
+            if not NON_VIDEO_DOMAINS.search(url):
+                return url
         return None
 
     def _handle_transfer_link(self, url: str, dest_dir: Path) -> Path | None:

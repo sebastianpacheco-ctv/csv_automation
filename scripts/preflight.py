@@ -62,14 +62,20 @@ def check_deps():
     import requests  # noqa: F401
     import slack_sdk  # noqa: F401
     import dotenv  # noqa: F401
-    # Playwright solo se usaba para renovar la cookie de Filestage, que ya está
-    # fuera del flujo. Ya no es crítico; si falta, no bloquea el burn-in.
-    base = "requests, slack_sdk, dotenv"
-    try:
-        import playwright  # noqa: F401
-        return True, base + ", playwright"
-    except ImportError:
-        return True, base + " (playwright no instalado — OK, Filestage fuera del flujo)"
+    # Extras NO críticos para el core del bot: gdown (carpetas de Drive; si falta
+    # degrada con aviso en Slack), flask (dashboard), playwright (legacy Filestage,
+    # fuera del flujo). No bloquean el burn-in.
+    have, missing = [], []
+    for mod in ("gdown", "flask", "playwright"):
+        try:
+            __import__(mod)
+            have.append(mod)
+        except ImportError:
+            missing.append(mod)
+    detail = "requests, slack_sdk, dotenv" + (" + " + ", ".join(have) if have else "")
+    if missing:
+        detail += f"  ·  opcionales sin instalar: {', '.join(missing)}"
+    return True, detail
 
 
 def check_env():

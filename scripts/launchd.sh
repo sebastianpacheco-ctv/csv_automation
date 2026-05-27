@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# Wrapper para gestionar el launchd plist del bot CSV automation.
+# Wrapper para gestionar los launchd plists del bot y del dashboard.
 #
-# Uso:
-#   scripts/launchd.sh install     # copia plist a ~/Library/LaunchAgents/ y lo carga
-#   scripts/launchd.sh uninstall   # descarga y borra
-#   scripts/launchd.sh restart     # reload completo (unload + load)
-#   scripts/launchd.sh status      # muestra PID + ultimo exit
-#   scripts/launchd.sh logs        # tail -f de logs/automation.log
-#   scripts/launchd.sh launchd-logs# tail -f de logs/launchd-stderr.log (cuando crashea)
+# Bot (por defecto):
+#   scripts/launchd.sh install | uninstall | restart | status | logs | launchd-logs
+# Dashboard (prefijo 'dashboard'):
+#   scripts/launchd.sh dashboard install | uninstall | restart | status | logs
+#
+# Nota: 'restart' sin prefijo reinicia SOLO el bot (lo usa el dashboard vía
+# /api/restart). El dashboard se gestiona aparte con el prefijo 'dashboard'.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLIST_NAME="com.seedtag.csv-automation.plist"
+
+# Selección de servicio: "dashboard <verb>" apunta al panel; si no, al bot.
+if [[ "${1:-}" == "dashboard" ]]; then
+  LABEL="com.seedtag.csv-dashboard"
+  LOGFILE="$ROOT/logs/dashboard-stderr.log"
+  shift
+else
+  LABEL="com.seedtag.csv-automation"
+  LOGFILE="$ROOT/logs/automation.log"
+fi
+PLIST_NAME="$LABEL.plist"
 PLIST_SRC="$ROOT/deploy/launchd/$PLIST_NAME"
 PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
-LABEL="com.seedtag.csv-automation"
 
 case "${1:-}" in
   install)
@@ -25,17 +34,17 @@ case "${1:-}" in
     mkdir -p "$(dirname "$PLIST_DST")"
     cp "$PLIST_SRC" "$PLIST_DST"
     launchctl load "$PLIST_DST"
-    echo "✓ Cargado. Estado:"
-    launchctl list | grep "$LABEL" || echo "(no aparece en la lista — ver logs/launchd-stderr.log)"
+    echo "✓ Cargado ($LABEL). Estado:"
+    launchctl list | grep "$LABEL" || echo "(no aparece — ver logs/${LABEL##*.}-stderr.log)"
     ;;
 
   uninstall)
     if [[ -f "$PLIST_DST" ]]; then
       launchctl unload "$PLIST_DST" 2>/dev/null || true
       rm "$PLIST_DST"
-      echo "✓ Descargado y borrado de ~/Library/LaunchAgents/"
+      echo "✓ Descargado y borrado ($LABEL)"
     else
-      echo "(no estaba instalado)"
+      echo "(no estaba instalado: $LABEL)"
     fi
     ;;
 
@@ -45,27 +54,27 @@ case "${1:-}" in
     fi
     cp "$PLIST_SRC" "$PLIST_DST"
     launchctl load "$PLIST_DST"
-    echo "✓ Reload completo. Estado:"
+    echo "✓ Reload completo ($LABEL). Estado:"
     launchctl list | grep "$LABEL" || echo "(no aparece en la lista)"
     ;;
 
   status)
     line=$(launchctl list | grep "$LABEL" || true)
     if [[ -z "$line" ]]; then
-      echo "✗ No cargado en launchd"
+      echo "✗ No cargado en launchd ($LABEL)"
       exit 1
     fi
     pid=$(echo "$line" | awk '{print $1}')
     status=$(echo "$line" | awk '{print $2}')
     if [[ "$pid" == "-" ]]; then
-      echo "⚠ Cargado pero NO corriendo (último exit code: $status). Ver logs/launchd-stderr.log"
+      echo "⚠ Cargado pero NO corriendo ($LABEL, último exit: $status)"
     else
-      echo "✓ PID $pid corriendo (último exit code: $status)"
+      echo "✓ PID $pid corriendo ($LABEL, último exit: $status)"
     fi
     ;;
 
   logs)
-    tail -f "$ROOT/logs/automation.log"
+    tail -f "$LOGFILE"
     ;;
 
   launchd-logs)
@@ -73,7 +82,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "Uso: $0 {install|uninstall|restart|status|logs|launchd-logs}" >&2
+    echo "Uso: $0 [dashboard] {install|uninstall|restart|status|logs|launchd-logs}" >&2
     exit 1
     ;;
 esac

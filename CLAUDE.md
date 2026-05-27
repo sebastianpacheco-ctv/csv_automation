@@ -293,12 +293,19 @@ Ver sección "Auth — JWT rolling" arriba.
 cd /Users/sebastianpacheco/csv-automation
 source venv/bin/activate
 python3 scripts/preflight.py          # valida todo el stack (7 checks)
-./scripts/launchd.sh install          # arranca el servicio (auto-start al login)
-./scripts/launchd.sh status           # PID + último exit
+./scripts/launchd.sh install          # arranca el BOT (auto-start al login)
+./scripts/launchd.sh status           # PID + último exit del bot
 ./scripts/launchd.sh logs             # tail -f logs/automation.log
-./scripts/launchd.sh restart          # tras cambios de código
+./scripts/launchd.sh restart          # reinicia el bot (lo usa también /api/restart)
 ./scripts/launchd.sh uninstall        # parar y quitar del autostart
+
+# Dashboard (servicio aparte, mismo patrón con el prefijo 'dashboard'):
+./scripts/launchd.sh dashboard install   # arranca el dashboard (auto-start al login)
+./scripts/launchd.sh dashboard status    # PID del dashboard
+./scripts/launchd.sh dashboard restart   # tras cambios del dashboard
+./scripts/launchd.sh dashboard logs      # tail -f logs/dashboard-stderr.log
 ```
+**Bot y dashboard corren como servicios launchd independientes:** arrancan solos al login, se mantienen arriba y **no dependen de Claude ni de ninguna terminal abierta.** El dashboard (`com.seedtag.csv-dashboard`) usa `KeepAlive: true` (servidor siempre arriba); el bot usa `KeepAlive {Crashed, !SuccessfulExit}`.
 **Prerequisito único:** `STUDIO_JWT_COOKIE` fresco en `.env` (DevTools → Cookies → `seedtag_jwt` en studio.seedtag.com con el bot logueado). El sidecar `.studio_jwt` lo mantiene fresco después.
 
 ## Estado verificado el 2026-05-27 (burn-in en curso)
@@ -342,10 +349,11 @@ Descarga el adjunto de SDS-21631, convierte, sube a Studio bajo el bot, crea el 
 - `<TICKET>/.studio_video_id` — idempotencia del upload por ticket.
 
 ## Dashboard de administración (`src/dashboard.py`)
-Web liviana (Flask) para ver y controlar el bot sin tocar archivos ni terminal.
+Web liviana (Flask, **dark mode**) para ver y controlar el bot sin tocar archivos ni terminal. Corre como **servicio launchd** (`com.seedtag.csv-dashboard`), independiente de Claude:
 ```bash
-source venv/bin/activate
-python3 src/dashboard.py        # → http://127.0.0.1:8787 (DASHBOARD_HOST/PORT configurables)
+./scripts/launchd.sh dashboard install   # arranca + auto-start al login → http://127.0.0.1:8787
+# (debug suelto, sin launchd:)  source venv/bin/activate && python3 src/dashboard.py
+# DASHBOARD_HOST/PORT configurables por env.
 ```
 - **Ve:** estado del bot (vivo/pausado, PID, último poll), cola 1597 en vivo, sidecars (seen/canceled/pending_studio), salud del JWT de Studio, tail del log.
 - **Controla:** reprocesar / cancelar / reactivar un ticket, pausar/reanudar el polling. Escribe en `.bot_control.json`; el bot lo aplica en su próximo loop (≤60s).

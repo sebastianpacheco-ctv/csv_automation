@@ -26,7 +26,7 @@ Detecta tickets de Jira con formato Standard Video (CSV/COV), convierte el víde
    - **Sube a Studio** bajo el bot `design_automations@seedtag.com`, pipeline **`ctv-base`** (⚠️ el SELECTOR_NAME string, NO el id hex — ver sección Studio).
    - **Espera procesado**: 10s → check → 10s × 15 (Studio completa en ~10-30s). Si tarda más → `pending_studio.json` 2da pasada.
    - **Crea creative** CSV-CTV con `createCovCreative`, y luego **setea country/category/configuration a nivel creative** con `set_creative_dimensions` (ver gotcha abajo).
-   - **Adjunta el .mp4** al ticket Jira (pre-check 150MB: si supera, pregunta en Slack si recomprime).
+   - **Adjunta el .mp4** al ticket Jira **solo si ≤ límite real de Jira** (~100 MB, auto-detectado vía `/attachment/meta`). Si lo supera, **NO adjunta ni recomprime** (conserva calidad full): avisa en Slack y el creative queda en Studio. En GCP el link de GCS reemplaza al adjunto para archivos grandes.
 9. **Comentario en Jira** (ADF clickable) con los preview links de todos los creatives + nota de borrar originales. **Los mismos links de preview de Studio se AGREGAN también al campo `description`** del ticket (al final, preservando el contenido existente; idempotente por href — ver `JiraClient.append_to_description` + `_build_studio_links_description`).
 10. **Setea customfield_15826** (Seedtag Specs, id 27743) vía PUT, luego **transición To Build → Building** vía `Start Building`.
 11. **Cleanup** de los .mp4 en `tmp/<TICKET>/` (conserva sidecars).
@@ -144,7 +144,7 @@ Triage  --[Send to Operations id=16]-->  To Build  --[Start Building id=5]-->  B
 - `no` / `cancel` → cancelar; queda en `tmp/.canceled_tickets.json`.
 - `reactivar SDS-XXXXX` → re-habilita un ticket cancelado (lo saca de canceled + seen_tickets).
 - `status` → resumen de la cola.
-- Recompresión >150MB: el bot pregunta en el hilo `si`/`no`.
+- Archivos > límite de Jira (~100 MB): el bot NO adjunta (conserva calidad), avisa en el hilo y deja el creative en Studio. (La recompresión interactiva se removió; `wait_for_yes_no` queda sin uso.)
 
 ## Filestage — DESACTIVADO del flujo (26-may-2026)
 El equipo CTV no usa Filestage para review (comentarios del cliente van a Jira) y `s3-complete` fallaba con 400. La clase `FilestageUploader` sigue en `src/uploader.py` por si se reactiva, pero `main.py` no la llama. Será reemplazado por GCS en la migración. Datos por si se reactiva:

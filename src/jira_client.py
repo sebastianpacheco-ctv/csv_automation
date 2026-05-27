@@ -624,6 +624,23 @@ class JiraClient:
         r.raise_for_status()
         return {t["name"]: t["id"] for t in r.json().get("transitions", [])}
 
+    def get_attachment_limit_mb(self, default_mb: int = 100) -> int:
+        """Límite REAL de tamaño de adjunto de la instancia Jira, en MB.
+        Lo consulta en /rest/api/3/attachment/meta (campo uploadLimit, bytes).
+        Sirve para no intentar adjuntar archivos que Jira va a rechazar (el bot
+        usa esto para decidir cuándo recomprimir). Fallback a default_mb si falla.
+        """
+        try:
+            r = requests.get(f"{self.base_url}/rest/api/3/attachment/meta",
+                             auth=self.auth, headers=self.headers, timeout=15)
+            r.raise_for_status()
+            limit = r.json().get("uploadLimit")
+            if limit:
+                return int(limit / (1024 * 1024))
+        except Exception as e:
+            log.warning(f"No se pudo leer el límite de adjuntos de Jira: {e}")
+        return default_mb
+
     def get_form_answers(self, ticket_key: str) -> dict:
         """Lee las forms de Atlassian Forms adjuntas al ticket y devuelve
         un dict {question_label: answer_text}. Algunos fields (como

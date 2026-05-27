@@ -56,10 +56,12 @@ POLL_INTERVAL = 60  # segundos entre chequeos
 # ID del nuevo formulario dedicado para CSV/COV
 CSV_REQUEST_TYPE_ID = "1916"
 
-# Limite que el equipo CTV se autoimpone para adjuntos en Jira: 150 MB.
-# Por encima de eso, el bot NO intenta adjuntar y avisa en Slack para que
-# el equipo decida (subirlo manualmente al ticket, dejarlo solo en Studio, etc).
-MAX_JIRA_ATTACH_MB = 150
+# Límite REAL de adjunto de Jira (la instancia SDS lo tiene en 100 MB). Este
+# valor es solo el fallback: en main() se auto-ajusta al límite real consultando
+# /rest/api/3/attachment/meta. Por encima de eso, el bot NO adjunta ni recomprime
+# (conserva calidad full); avisa en Slack y el creative queda en Studio. En GCP,
+# el link de GCS reemplaza al adjunto para los archivos grandes.
+MAX_JIRA_ATTACH_MB = 100
 
 
 def _load_seen_tickets(path: Path) -> set[str]:
@@ -781,38 +783,22 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
             res["studio_error"] = f"{type(e).__name__}: {e}"
             post_thread(f"{lbl}⚠️ Studio error: `{type(e).__name__}: {e}`. El .mp4 queda adjunto al ticket.")
 
-        # Attach a Jira (con recompresion interactiva si >150MB)
+        # Attach a Jira. Jira tiene un límite real de adjunto (~100 MB;
+        # MAX_JIRA_ATTACH_MB se auto-ajusta a ese límite en main()). Si el .mp4
+        # lo supera, NO se adjunta ni se recomprime: se conserva la calidad full.
+        # El creative ya está en Studio; en producción (GCP) el link de GCS
+        # reemplaza al adjunto para los archivos grandes.
         attach_skip = None
         if size_mb > MAX_JIRA_ATTACH_MB:
-            try:
-                dur = converter.get_duration(raw_path)
-                target_mb = MAX_JIRA_ATTACH_MB - 5
-                target_video_mbps = max(int((target_mb * 8) / dur - 0.3), 3)
-            except Exception:
-                target_video_mbps = 10
-            q_ts = slack.send_thread_message(msg["ts"],
-                f"{lbl}⚠️ `{out.name}` pesa *{size_mb:.1f} MB* (>{MAX_JIRA_ATTACH_MB} MB para Jira).\n"
-                f"Recomprimo a *~{target_video_mbps} Mbps*? Responde *si*/*no* (10 min).")
-            answer = slack.wait_for_yes_no(msg["ts"], q_ts, timeout=600)
-            if answer == "yes":
-                out.unlink()
-                re_out = converter.convert(raw_path, override_bitrate_mbps=target_video_mbps)
-                if re_out:
-                    cp = re_out.parent / f"{canonical}.mp4"
-                    if cp != re_out:
-                        if cp.exists():
-                            cp.unlink()
-                        re_out.rename(cp)
-                    out = cp
-                    size_mb = out.stat().st_size / (1024 * 1024)
-                    post_thread(f"{lbl}✅ Re-convertido: {size_mb:.1f} MB ({converter.last_bitrate} Mbps)")
-                else:
-                    attach_skip = "re-conversion fallo"
-            else:
-                attach_skip = (f"{size_mb:.1f} MB > {MAX_JIRA_ATTACH_MB} MB; "
-                               f"usuario {'dijo no' if answer == 'no' else 'no respondio'}")
-
-        if size_mb <= MAX_JIRA_ATTACH_MB and not attach_skip:
+            attach_skip = (f"{size_mb:.1f} MB > {MAX_JIRA_ATTACH_MB} MB "
+                           f"(límite de Jira) — no se adjunta; creative en Studio")
+            post_thread(
+                f"{lbl}ℹ️ `{out.name}` pesa *{size_mb:.1f} MB*, supera el límite de "
+                f"*{MAX_JIRA_ATTACH_MB} MB* de Jira → *no se adjunta* (se conserva la "
+                f"calidad full). El creative ya está en Studio; en producción irá "
+                f"el link de GCS."
+            )
+        else:
             try:
                 jira.attach_file(ticket_key, out)
                 res["attached_filename"] = out.name
@@ -939,6 +925,12 @@ def main():
         api_token=os.getenv("JIRA_API_TOKEN"),
         project_key=os.getenv("JIRA_PROJECT_KEY"),
     )
+    # Auto-ajustar el umbral de adjunto al límite REAL de Jira (evita el HTTP 400
+    # "exceedes max allowed size" en archivos que el bot creía válidos).
+    global MAX_JIRA_ATTACH_MB
+    MAX_JIRA_ATTACH_MB = jira.get_attachment_limit_mb(default_mb=MAX_JIRA_ATTACH_MB)
+    log.info(f"Límite de adjunto de Jira: {MAX_JIRA_ATTACH_MB} MB (umbral de no-adjunto)")
+
     slack = SlackClient(
         token=os.getenv("SLACK_BOT_TOKEN"),
         channel=os.getenv("SLACK_CHANNEL", "csv-tickets"),

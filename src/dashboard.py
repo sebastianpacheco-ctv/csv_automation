@@ -522,7 +522,19 @@ HTML = r"""<!DOCTYPE html>
   .mrow{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
   .approvebar{background:var(--coral);color:#fff;border-radius:14px;padding:14px 20px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .approvebar b{font-weight:700}
+
+  /* ── A1: layout grid 2/3 + 1/3 ── */
+  main.grid{display:grid;grid-template-columns:2fr 1fr;gap:18px;align-items:start;margin-top:0}
+  main.grid > .col-main,
+  main.grid > .col-side{display:flex;flex-direction:column;gap:18px}
+  main.grid .panel{margin-bottom:0}  /* el gap del flex maneja la separación */
+  @media(max-width:1100px){main.grid{grid-template-columns:1fr}}
   @media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}}
+
+  /* Banners / alerts top-of-page (sidecar D3, onboarding F4) — placeholders */
+  #sidecar-alert,#onboarding-banner{margin-bottom:14px}
+  #sidecar-alert[hidden],#onboarding-banner[hidden],
+  #metrics[hidden],#help-panel[hidden]{display:none !important}
 </style></head>
 <body>
   <div class="top">
@@ -537,60 +549,79 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="approvebar"></div>
+  <!-- Banners top-of-content. Quedan ocultos hasta que el bloque correspondiente los active. -->
+  <div id="onboarding-banner" hidden></div>     <!-- F4: hint primera vez (Guía rápida) -->
+  <div id="sidecar-alert" hidden></div>         <!-- D3: aviso si .seen/.history/.pending son JSON corrupto -->
 
-  <div class="cards" id="cards"></div>
+  <div id="approvebar"></div>                   <!-- Tanda 3: aprobar/rechazar (activo) -->
 
-  <div class="panel">
-    <h2>Mantenimiento</h2>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-dark" onclick="restartBot()">↻ Reiniciar bot</button>
-      <button class="btn btn-ghost" onclick="runHealth()">🩺 Health checks</button>
-      <span id="health" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span>
+  <section class="metrics" id="metrics" hidden></section>   <!-- E3: 5 cards de métricas 7d -->
+
+  <div class="cards" id="cards"></div>          <!-- cards de estado básico (activo) -->
+
+  <!-- ── A1: layout 2/3 + 1/3 ── -->
+  <main class="grid">
+    <div class="col-main">
+
+      <div class="panel">
+        <h2>Cola 1597 — Video Operations</h2>
+        <table><thead><tr><th>Ticket</th><th>Resumen</th><th>Estado Jira</th><th>CSV</th><th>En el bot</th><th></th></tr></thead>
+        <tbody id="queue"><tr><td colspan="6" class="muted">cargando…</td></tr></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h2>Historial de procesado</h2>
+        <table><thead><tr><th>Ticket</th><th>Resultado</th><th>Detalle</th><th>Cuándo</th><th></th></tr></thead>
+        <tbody id="history"><tr><td colspan="5" class="muted">cargando…</td></tr></tbody></table>
+      </div>
+
     </div>
-    <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" class="mrow">
-      <textarea id="jwt" placeholder="Pegá el JWT nuevo de Studio (seedtag_jwt de DevTools → Cookies)…"
-        style="flex:1;min-width:300px;height:58px;border:1px solid var(--g1);border-radius:9px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical"></textarea>
-      <button class="btn btn-coral" onclick="renewJwt()">Renovar JWT + reiniciar</button>
-    </div>
-    <div class="mrow">
-      <button class="btn btn-ghost" onclick="loadDisk()">💾 Disco</button>
-      <span id="disk" class="muted"></span>
-      <button class="btn btn-ghost" onclick="cleanup()">🧹 Limpiar videos de TMP</button>
-    </div>
-    <div class="mrow" style="align-items:flex-end">
-      <label class="cfg">Bitrate ≤30s (Mbps)<input id="BITRATE_SHORT" type="number" min="1"></label>
-      <label class="cfg">Bitrate &gt;30s (Mbps)<input id="BITRATE_LONG" type="number" min="1"></label>
-      <label class="cfg">Umbral duración (s)<input id="DURATION_THRESHOLD" type="number" min="1"></label>
-      <button class="btn btn-coral" onclick="saveConfig()">Guardar config + reiniciar</button>
-      <span id="cfgnote" class="muted"></span>
-    </div>
-  </div>
+    <aside class="col-side">
 
-  <div class="panel">
-    <h2>Cola 1597 — Video Operations</h2>
-    <table><thead><tr><th>Ticket</th><th>Resumen</th><th>Estado Jira</th><th>CSV</th><th>En el bot</th><th></th></tr></thead>
-    <tbody id="queue"><tr><td colspan="6" class="muted">cargando…</td></tr></tbody></table>
-  </div>
+      <div class="panel">
+        <h2>Mantenimiento</h2>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-dark" onclick="restartBot()">↻ Reiniciar bot</button>
+          <button class="btn btn-ghost" onclick="runHealth()">🩺 Health checks</button>
+          <span id="health" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap" class="mrow">
+          <textarea id="jwt" placeholder="Pegá el JWT nuevo de Studio (seedtag_jwt de DevTools → Cookies)…"
+            style="flex:1;min-width:240px;height:58px;border:1px solid var(--g1);border-radius:9px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical"></textarea>
+          <button class="btn btn-coral" onclick="renewJwt()">Renovar JWT + reiniciar</button>
+        </div>
+        <div class="mrow">
+          <button class="btn btn-ghost" onclick="loadDisk()">💾 Disco</button>
+          <span id="disk" class="muted"></span>
+          <button class="btn btn-ghost" onclick="cleanup()">🧹 Limpiar videos de TMP</button>
+        </div>
+        <div class="mrow" style="align-items:flex-end">
+          <label class="cfg">Bitrate ≤30s (Mbps)<input id="BITRATE_SHORT" type="number" min="1"></label>
+          <label class="cfg">Bitrate &gt;30s (Mbps)<input id="BITRATE_LONG" type="number" min="1"></label>
+          <label class="cfg">Umbral duración (s)<input id="DURATION_THRESHOLD" type="number" min="1"></label>
+          <button class="btn btn-coral" onclick="saveConfig()">Guardar config + reiniciar</button>
+          <span id="cfgnote" class="muted"></span>
+        </div>
+      </div>
 
-  <div class="panel">
-    <h2>Pendientes de Studio (2ª pasada)</h2>
-    <tbody><table id="pending"></table></tbody>
-    <div id="pending-empty" class="muted">—</div>
-  </div>
+      <div class="panel">
+        <h2>Pendientes de Studio (2ª pasada)</h2>
+        <tbody><table id="pending"></table></tbody>
+        <div id="pending-empty" class="muted">—</div>
+      </div>
 
-  <div class="panel">
-    <h2>Historial de procesado</h2>
-    <table><thead><tr><th>Ticket</th><th>Resultado</th><th>Detalle</th><th>Cuándo</th><th></th></tr></thead>
-    <tbody id="history"><tr><td colspan="5" class="muted">cargando…</td></tr></tbody></table>
-  </div>
+      <div class="panel">
+        <h2>Log reciente</h2>
+        <div class="log" id="log">—</div>
+      </div>
 
-  <div class="panel">
-    <h2>Log reciente</h2>
-    <div class="log" id="log">—</div>
-  </div>
+    </aside>
+  </main>
 
   <div class="wordmark">SEEDTAG · Design Studio</div>
+
+  <section id="help-panel" hidden></section>    <!-- F2: Guía rápida (collapsible) -->
+
   <div class="toast" id="toast"></div>
 
 <script>

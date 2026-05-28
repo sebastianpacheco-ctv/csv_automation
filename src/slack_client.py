@@ -39,12 +39,13 @@ class SlackClient:
                           multiformat: bool = False, deadline: str = "",
                           plan: dict | None = None) -> dict:
 
-        # Mostrar formatos con nombres correctos
+        # Cantidades del form. OJO: estas son cantidades de UNIDAD, NO del canal.
+        # El canal (CTV / Open Web) vive aparte en la pregunta 'Channels' del form.
         format_lines = []
         if format1_qty > 0:
-            format_lines.append(f"• Standard Video (CTV): {int(format1_qty)}")
+            format_lines.append(f"• Standard Video: {int(format1_qty)}")
         if format2_qty > 0:
-            format_lines.append(f"• Standard Display (Open Web): {int(format2_qty)}")
+            format_lines.append(f"• Standard Display: {int(format2_qty)}")
         if format3_qty > 0:
             format_lines.append(f"• Formato adicional: {int(format3_qty)}")
         formats_text = "\n".join(format_lines) if format_lines else "• (ver ticket)"
@@ -122,46 +123,6 @@ class SlackClient:
         )
         return r["ts"]
 
-    def wait_for_yes_no(self, thread_ts: str, after_ts: str,
-                         timeout: int = 600, poll_interval: int = 10) -> str | None:
-        """Espera respuesta yes/no en el hilo `thread_ts`, solo cuenta mensajes
-        posteriores a `after_ts` (para distinguir la pregunta de respuestas
-        previas).
-
-        Devuelve:
-          'yes' si alguien dice si/sí/yes/y/dale/adelante/comprime
-          'no'  si alguien dice no/n/cancel/salta/saltar
-          None  si timeout.
-        """
-        deadline = time.time() + timeout
-        YES = {"si", "sí", "yes", "y", "dale", "adelante", "comprime", "recomprime"}
-        NO = {"no", "n", "cancel", "salta", "saltar", "skip"}
-        log.info(f"Esperando yes/no en hilo {thread_ts} (timeout {timeout}s)...")
-        while time.time() < deadline:
-            try:
-                r = self.client.conversations_replies(
-                    channel=self.channel_id, ts=thread_ts, limit=50,
-                )
-                for m in r.get("messages", []):
-                    mts = m.get("ts", "")
-                    if mts <= after_ts:
-                        continue
-                    if m.get("bot_id"):
-                        continue
-                    text = m.get("text", "").strip().lower()
-                    words = set(text.split())
-                    if words & YES:
-                        log.info(f"Respuesta YES en hilo: {text!r}")
-                        return "yes"
-                    if words & NO:
-                        log.info(f"Respuesta NO en hilo: {text!r}")
-                        return "no"
-            except SlackApiError as e:
-                log.warning(f"Error leyendo hilo {thread_ts}: {e}")
-            time.sleep(poll_interval)
-        log.info(f"Timeout esperando yes/no en hilo {thread_ts}")
-        return None
-
     def wait_for_ticket_response(self, channel: str, message_ts: str,
                                   timeout: int = 3600, poll_interval: int = 15
                                   ) -> dict | None:
@@ -178,10 +139,11 @@ class SlackClient:
           'no' / 'cancel' / 'cancelar' / 'salta' / 'saltar' / 'skip'
             -> action='cancel'
 
-        Nota: el bitrate ya NO se acepta como override aqui. El bot SIEMPRE
-        usa los parametros default (30 Mbps <=30s / 15 Mbps >30s). El unico
-        ajuste posible viene mas tarde si el .mp4 supera 150 MB: en ese caso
-        el bot pregunta aparte si recomprime (ver wait_for_yes_no).
+        Nota: el bitrate NO se acepta como override aqui. El bot SIEMPRE usa
+        los parametros default del flujo (CTV: 30 Mbps <=30s / 15 Mbps >30s;
+        Open Web: bitrate calculado para target ~4 MB). Si el .mp4 supera el
+        limite real de adjunto de Jira (~100 MB) NO se adjunta ni se recomprime
+        — se conserva la calidad full y queda solo el creative en Studio.
         """
         if channel != self.channel_id:
             log.warning(f"Intento de leer canal no autorizado: {channel}. Ignorado.")

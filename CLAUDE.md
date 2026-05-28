@@ -110,9 +110,10 @@ LOGS_DIR=./logs
   - `customfield_14324` → Operator Entity (US, CA, MX, BR, ROLA, ES, FR, DE, IT, UK, BNL, AND, MENA, EMEA, EU)
   - `customfield_11531` → Ticket Type (CAMP/PROP)
   - `customfield_15827` → CSV quantity total
-  - `customfield_15865` → Standard Video (CTV) qty
-  - `customfield_15866` → Standard Display (Open Web) qty
+  - `customfield_15865` → **Standard Video qty** (sin canal — el canal vive aparte en el form)
+  - `customfield_15866` → **Standard Display qty** (sin canal — idem)
   - `customfield_15867` → Formato adicional qty
+- **Canal CTV vs Open Web** (descubierto 2026-05-28): NO es un customfield estándar. Vive en el **form** (forms.cloud) como pregunta tipo checkbox-multi llamada `Channels`, con dos choices: `id="1"` → **CTV**, `id="2"` → **Open Web**. Hoy `get_form_answers` solo captura answers tipo texto; para leer el canal hay que extender el parser para incluir el array `choices` de answers tipo `cm`. (Pendiente del feature Open Web — ver "Plan operacional".)
   - `customfield_15831` → Industry → mapea a category de Studio
   - `customfield_15826` → Seedtag Specs (requerido al transicionar a "Start Building", valor id `"27743"`)
   - `customfield_11300` → Deadline
@@ -144,7 +145,7 @@ Triage  --[Send to Operations id=16]-->  To Build  --[Start Building id=5]-->  B
 - `no` / `cancel` → cancelar; queda en `tmp/.canceled_tickets.json`.
 - `reactivar SDS-XXXXX` → re-habilita un ticket cancelado (lo saca de canceled + seen_tickets).
 - `status` → resumen de la cola.
-- Archivos > límite de Jira (~100 MB): el bot NO adjunta (conserva calidad), avisa en el hilo y deja el creative en Studio. (La recompresión interactiva se removió; `wait_for_yes_no` queda sin uso.)
+- Archivos > límite de Jira (~100 MB): el bot NO adjunta (conserva calidad), avisa en el hilo y deja el creative en Studio. (La recompresión interactiva fue removida del flujo y el método `wait_for_yes_no` se eliminó.)
 
 ## Filestage — DESACTIVADO del flujo (26-may-2026)
 El equipo CTV no usa Filestage para review (comentarios del cliente van a Jira) y `s3-complete` fallaba con 400. La clase `FilestageUploader` sigue en `src/uploader.py` por si se reactiva, pero `main.py` no la llama. Será reemplazado por GCS en la migración. Datos por si se reactiva:

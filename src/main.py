@@ -676,8 +676,12 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
     f2 = int(float(fields.get("customfield_15866") or 0))  # Standard Display (Open Web)
     f3 = int(float(fields.get("customfield_15867") or 0))  # Formato adicional
 
+    # OJO: f1/f2/f3 son cantidades de "Standard Video", "Standard Display" y
+    # "Formato adicional" — NO el canal (CTV/Open Web vive en el form aparte
+    # en la pregunta 'Channels'). Etiquetas anteriores ("CTV:/OW:") eran erróneas.
     log.info(f"Procesando {ticket_key}: {summary} | {operator_entity} | "
-             f"CTV:{f1} OW:{f2} F3:{f3} | Multi:{is_multiformat_ticket(issue)}")
+             f"StdVideo:{f1} StdDisplay:{f2} Otro:{f3} | "
+             f"Multi:{is_multiformat_ticket(issue)}")
     started = datetime.now(timezone.utc).isoformat()
     _set_activity(f"{ticket_key}: revisando")
 

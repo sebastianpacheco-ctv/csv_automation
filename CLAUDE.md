@@ -283,6 +283,45 @@ Ver sección "Auth — JWT rolling" arriba.
 - GCS bucket para vídeos procesados (signed URL ~90 días) reemplazando Filestage. Service account = auth sin cookies.
 - Requiere instalar ffmpeg + venv en la VM. Playwright YA NO es necesario (Filestage fuera).
 
+### 6. Feature **Standard Video Open Web** (diseño cerrado 2026-05-28, sin construir)
+Hermano del flujo CTV: misma maquinaria (descarga, ffmpeg, Studio, comentario,
+adjunto, transiciones, dashboard) con estos **deltas** confirmados:
+
+**Detección (nueva)** — leer del form (forms.cloud):
+- Q48 *Standard Video* (qty), Q49 *Standard Display* (qty), Q50 *Channels* (cm, choices `"1"`=CTV, `"2"`=Open Web).
+- Si Channels = ["1"] solo → flujo CTV (actual). Si = ["2"] solo → flujo Open Web (nuevo).
+- Si Channels = [] o ["1","2"] → freno + aviso en Slack con la Additional information del form, espera `reactivar`.
+- Si Std Display > 0 → procesa Video normal + avisa la "peculiaridad" en Slack (Display no se procesa).
+- ⚠️ El parser actual `get_form_answers` solo captura answers tipo texto; hay que extenderlo para incluir el array `choices` de answers tipo `cm`.
+
+**Pipeline de Studio (por aspect ratio del source, ffprobe, tolerancia ±5%)**:
+| Aspect ratio | Pipeline |
+|---|---|
+| 16:9 (1.78) | `open-web-horizontal` |
+| 9:16 (0.56) | `open-web-vertical` |
+| 1:1 (1.00) | `open-web-square` |
+| 4:5 (0.80) | `open-web-vertical-4-5` |
+| 2:3 (0.67) | `open-web-vertical-2-3` |
+
+**Template del creative (`adTemplate`)** — verificado contra creatives reales (`6a17594842dff3d1bc89eae1` vertical, `6a176eba00154e5a397027e7` horizontal; reference guardada en `tmp/open_web_template_reference_*.json`):
+- `templateShortCode="COV"`, `productFamily="contextual-outstream-video"`, `size="600x600"` (canónico, no varía), `metatags=["cov-express"]`, `props.version="v2"`.
+- `creativeTree` con los mismos 7 children que CTV; `HtmlSnippets.compiled` copiado tal cual del reference (~9.5 KB, incluye button-info + CSS).
+- `manifest.arguments` con los defaults del reference (augmentedClickArea=false, fixed=false, hideMuteButton=false, closeable=true, expandable=true, clickUrl="").
+- Mutación: la **misma** `createCovCreative` que CTV (lo que cambia es el `adTemplate`).
+- `set_creative_dimensions(country, category, configuration="none")` se reusa tal cual.
+
+**Encoding (target 4 MB, respetar aspect ratio del source)**:
+- Resolución por duración (preservando ratio): ≤20s short-side 1080 · 20–40s short-side 720 · >40s short-side 540.
+- Bitrate calculado para target ~3.6 MB (margen 10%). En videos largos avisa en Slack si la calidad cae mucho.
+- Nunca forzar 1920×1080 (los videos pueden ser verticales/cuadrados).
+
+**Naming canónico**: `<summary_sanitized>_COV[_Vn]` (paralelo a `_CTV_CSV[_Vn]`).
+
+**Plan de build (3 tandas)**:
+- **Tanda A**: extender `get_form_answers` para captar `cm/choices`, lógica de detección/routing/freno en `main.py`. Testeable sin tocar Studio.
+- **Tanda B**: aspect ratio dispatcher + `build_open_web_ad_template()` + encoding modo "target 4 MB" en `converter.py` + upload con pipeline correcto. End-to-end con ticket OW real.
+- **Tanda C**: docs (CLAUDE.md + HANDOFF.md), naming, pulido, tests.
+
 ### Mejoras futuras (no bloqueantes)
 - #35: bajar videos desde más tipos de links (Drive/WeTransfer/Dropbox con auth/bypass). Pendiente definir qué servicios priorizar.
 - Soporte para Standard Display (JPG/PNG vía Pillow).

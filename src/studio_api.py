@@ -62,27 +62,50 @@ COUNTRY_MAP = {
     "eu":    "international",
 }
 
+# Mapeo Jira Industry (customfield_15831) → Studio category.
+# Auditado 2026-05-28 contra:
+#   - allowedValues del campo Industry en Jira (13 opciones).
+#   - getCreativeDimensions().categories en Studio (24 categorías válidas).
+# Bug fixeado: "technology"/"tech" mapeaban a "industry" — incorrecto, son
+# categorías distintas en Studio. Ahora "technology"→"technology".
+# Las claves se comparan en lower()/strip(). Opciones de Jira "combinadas"
+# (ej. "Business, Industry, And Logistics") mapean a la categoría Studio más
+# englobante. Las entradas extra son aliases por compatibilidad futura.
 CATEGORY_MAP = {
-    "food and drinks":   "food-and-drinks",
-    "food & drinks":     "food-and-drinks",
-    "automotive":        "automotive",
-    "fashion":           "fashion",
-    "health":            "health",
-    "beauty":            "beauty",
-    "entertainment":     "entertainment",
-    "financial":         "financial",
-    "retail":            "retail",
-    "technology":        "industry",
-    "tech":              "industry",
-    "education":         "education",
-    "energy":            "energy",
-    "insurance":         "insurance",
-    "betting":           "betting",
-    "charity":           "charity",
-    "governmental":      "governmental",
-    "home":              "home",
-    "appliances":        "appliances",
-    "pets":              "pets",
+    # ── 13 opciones reales del field Industry en Jira (mayúsculas en Jira) ──
+    "automotive":                        "automotive",
+    "beauty":                            "beauty",
+    "business, industry, and logistics": "industry",
+    "entertainment and culture":         "entertainment",
+    "fashion":                           "fashion",
+    "food and drinks":                   "food-and-drinks",
+    "health":                            "health",
+    "home":                              "home",
+    "non-profits and public services":   "charity",
+    "pets":                              "pets",
+    "retail":                            "retail",
+    "technology":                        "technology",
+    "travel and transportation":         "travel",
+    # ── Aliases / posibles valores históricos o variantes ──
+    "food & drinks":                     "food-and-drinks",
+    "tech":                              "technology",
+    "entertainment":                     "entertainment",
+    "industry":                          "industry",
+    "charity":                           "charity",
+    "travel":                            "travel",
+    # ── Categorías Studio sin opción Jira directa (compat forward) ──
+    "appliances":                        "appliances",
+    "betting":                           "betting",
+    "education":                         "education",
+    "energy":                            "energy",
+    "financial":                         "financial",
+    "governmental":                      "governmental",
+    "insurance":                         "insurance",
+    "shipping":                          "shipping",
+    "spirits":                           "spirits",
+    "sports":                            "sports",
+    "tobacco and vaping":                "tobacco-and-vaping",
+    "tobacco-and-vaping":                "tobacco-and-vaping",
 }
 
 
@@ -719,8 +742,20 @@ class StudioAPIClient:
                                "international")
 
     @staticmethod
-    def map_category(jira_industry: str) -> str:
-        return CATEGORY_MAP.get((jira_industry or "").lower().strip(), "")
+    def map_category(jira_industry: str):
+        """Mapea el valor del field Industry de Jira a una categoría válida de
+        Studio (CATEGORY_MAP). Devuelve None si no hay mapeo — así
+        set_creative_dimensions no setea categoría inválida (mejor vacío en la
+        lista de Studio que un valor incorrecto). Loguea WARNING cuando llegó
+        un valor no vacío sin mapeo, para detectar gaps del map."""
+        key = (jira_industry or "").lower().strip()
+        if not key:
+            return None
+        mapped = CATEGORY_MAP.get(key)
+        if mapped is None:
+            log.warning(f"Industry {jira_industry!r} sin mapeo en CATEGORY_MAP — "
+                        f"la categoría NO se setea en el creative")
+        return mapped
 
 
 # ─────────────────────────────────────────────────────────────────────────────

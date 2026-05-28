@@ -523,6 +523,34 @@ HTML = r"""<!DOCTYPE html>
   .approvebar{background:var(--coral);color:#fff;border-radius:14px;padding:14px 20px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .approvebar b{font-weight:700}
 
+  /* ── A2: sticky header full-width ── */
+  header.topbar{
+    position:sticky;top:0;z-index:50;
+    background:rgba(14,14,16,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--line);
+    padding:12px 22px;
+    margin:-22px -26px 20px;  /* negar el padding del body → full-width */
+    display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap
+  }
+  .topbar .brand h1{font-size:1.2rem;font-weight:700;letter-spacing:-.01em;color:#fff;margin:0}
+  .topbar .brand h1 .em{font-family:var(--serif);font-style:italic;font-weight:400;color:var(--coral)}
+  .topbar .brand .subtitle{font-size:.74rem;margin-top:2px}
+  .topbar .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+  /* Alerts badge (E3 lo activa; placeholder hidden hasta entonces) */
+  .alerts-btn{display:inline-flex;align-items:center;gap:6px;background:var(--coral);color:#fff;padding:6px 12px;border-radius:999px;font-weight:700;font-size:.78rem;border:none;cursor:pointer;font-family:var(--sans)}
+  .alerts-btn .n{background:rgba(255,255,255,.25);padding:1px 7px;border-radius:999px;font-size:.72rem}
+  .alerts-btn[hidden]{display:none}
+
+  /* Abort current ticket (D6 lo activa; placeholder hidden) */
+  #abortbtn{background:rgba(255,107,124,.18);color:#ff8a9a;border:1px solid rgba(255,107,124,.4)}
+  #abortbtn[hidden]{display:none}
+
+  /* Quicklinks (A3 lo llena) */
+  .quicklinks{display:inline-flex;gap:6px;align-items:center}
+  .quicklinks a.ql{background:var(--surface2);border:1px solid var(--line);color:var(--text);padding:5px 10px;border-radius:7px;font-size:.76rem;font-weight:500;text-decoration:none;display:inline-flex;gap:5px;align-items:center}
+  .quicklinks a.ql:hover{border-color:var(--coral);color:#fff}
+
   /* ── A1: layout grid 2/3 + 1/3 ── */
   main.grid{display:grid;grid-template-columns:2fr 1fr;gap:18px;align-items:start;margin-top:0}
   main.grid > .col-main,
@@ -537,17 +565,24 @@ HTML = r"""<!DOCTYPE html>
   #metrics[hidden],#help-panel[hidden]{display:none !important}
 </style></head>
 <body>
-  <div class="top">
-    <div>
+  <header class="topbar">
+    <div class="brand">
       <h1>Panel del bot <span class="em">CSV CTV</span></h1>
-      <div class="muted" id="subtitle" style="margin-top:4px">cargando…</div>
+      <div class="muted subtitle" id="subtitle">cargando…</div>
     </div>
-    <div class="statusbar">
+    <div class="actions">
       <span class="chip" id="botstate">—</span>
+      <!-- E3: alerts badge (hidden hasta tener data). onClick: abre dropdown con items accionables. -->
+      <button class="alerts-btn" id="alertsbtn" hidden onclick="toggleAlertsPanel()">⚠ atenciones <span class="n" id="alertscount">0</span></button>
+      <!-- D6: abort current ticket (hidden hasta que bot.current != None). -->
+      <button class="btn" id="abortbtn" hidden onclick="abortCurrent()">⛔ Abortar ticket</button>
       <button class="btn btn-dark" id="pausebtn" onclick="togglePause()">Pausar</button>
+      <button class="btn btn-ghost" onclick="restartBot()">↻ Reiniciar bot</button>
       <button class="btn btn-ghost" onclick="refresh()">↻ Refrescar</button>
+      <!-- A3: quick links (Jira + Studio) -->
+      <span class="quicklinks" id="quicklinks"></span>
     </div>
-  </div>
+  </header>
 
   <!-- Banners top-of-content. Quedan ocultos hasta que el bloque correspondiente los active. -->
   <div id="onboarding-banner" hidden></div>     <!-- F4: hint primera vez (Guía rápida) -->
@@ -581,7 +616,6 @@ HTML = r"""<!DOCTYPE html>
       <div class="panel">
         <h2>Mantenimiento</h2>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-dark" onclick="restartBot()">↻ Reiniciar bot</button>
           <button class="btn btn-ghost" onclick="runHealth()">🩺 Health checks</button>
           <span id="health" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></span>
         </div>

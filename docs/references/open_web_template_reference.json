@@ -1,0 +1,229 @@
+{
+  "id": "6a17594842dff3d1bc89eae1",
+  "name": "APPLE_OMD_RITMO_CARDIACO_MAY_15_SEG_2026_FROM_VE",
+  "size": "600x600",
+  "productFamily": "contextual-outstream-video",
+  "loader": "v2",
+  "templateShortCode": "COV",
+  "status": "PUBLISHEDUPDATED",
+  "country": null,
+  "category": null,
+  "configuration": null,
+  "metatags": [
+    "cov-express"
+  ],
+  "manifest": {
+    "messages": [
+      "video_loaded",
+      "video_play",
+      "video_percentile_25",
+      "video_percentile_50",
+      "video_percentile_75",
+      "video_complete",
+      "video_replay",
+      "click",
+      "close",
+      "error",
+      "impression",
+      "bounce",
+      "view_0s50",
+      "view_1s50",
+      "view_2s50",
+      "view_3s50",
+      "hover",
+      "intervention",
+      "minimize"
+    ],
+    "arguments": [
+      {
+        "name": "augmentedClickArea",
+        "type": "boolean",
+        "defaultValue": false
+      },
+      {
+        "name": "fixed",
+        "type": "boolean",
+        "defaultValue": false
+      },
+      {
+        "name": "hideMuteButton",
+        "type": "boolean",
+        "defaultValue": false
+      },
+      {
+        "name": "closeable",
+        "type": "boolean",
+        "defaultValue": true
+      },
+      {
+        "name": "expandable",
+        "type": "boolean",
+        "defaultValue": true
+      },
+      {
+        "name": "clickUrl",
+        "type": "url",
+        "defaultValue": ""
+      }
+    ],
+    "contexts": {}
+  },
+  "creativeTree": {
+    "type": "Creative",
+    "props": {
+      "version": "v2",
+      "editor": {
+        "name": "APPLE_OMD_RITMO_CARDIACO_MAY_15_SEG_2026_FROM_VE",
+        "assets": [
+          [
+            "replay.jpg",
+            {
+              "name": "replay.jpg",
+              "value": "https://creatives.seedtag.com/62792535453f5f002b9dad33/1655134861326.jpg"
+            }
+          ]
+        ],
+        "components": [
+          [
+            "button-info",
+            [
+              "RawComponent",
+              {
+                "name": "button-info",
+                "html": "<!--\n  To enable the button info, uncomment that section in \"additional files > index.html\"\n-->\n<a href=\"https://www.seedtag.com/privacy/\" target=\"_blank\">\n  <div id=\"button-info\" class=\"button-info\"></div>\n</a>",
+                "css": ".button-info {\n  background-position: center;\n  background-repeat: no-repeat;\n  background-image: url('https://config.seedtag.com/adTemplatesPro/info.svg');\n  background-size: contain;\n  background-color: rgba(0, 0, 0, 0.6);\n  width: 20px;\n  height: 20px;\n  position: absolute;\n  bottom: 0;\n  left: 0;\n  z-index: 9999999999;\n}",
+                "js": "// On mount\nfunction onMountInfo(el) {\n\n}\n\n// On unmount\nfunction onUnmountInfo(el) {\n\n}\n\n// ==== Don't touch me ====\nfunction render(props, children, ref) {\n  useEffect(() => {\n    onMountInfo(ref.current)\n    return () => onUnmountInfo(ref.current)\n  }, [])\n}"
+              }
+            ]
+          ],
+          [
+            "video-component",
+            [
+              "RawComponent",
+              {
+                "name": "video-component",
+                "html": "<div class=\"background\">\n  <video-player\n    id=\"video\"\n    class=\"video\"\n    vast=\"https://dvrtr.innovid.com/v3/vast?_media=1&ctx=15925853&cmp=240665&sid=8091&plc=5394771&advid=4897&adsrv=118&psf=0&_vast=https%3A%2F%2Frtr.innovid.com%2Fr1.6a15f6f7db3de5.27626145%3Bcb%3D%7Bs1%7D%3Fgdpr%3D%24%7BGDPR%7D%26gdpr_consent%3D%7Bs2%7D&_s1=[timestamp]&_s2=${GDPR_CONSENT_452}&_api=[APIFRAMEWORKS]&_ssm=[SERVERSIDE]&_tsm=[TIMESTAMP]&gdpr=${GDPR}&gdpr_consent=${GDPR_CONSENT_126}&_abm=[APPBUNDLE]&_pum=[PAGEURL]\"\n    allow-replay=\"allowReplay\"\n    mute-over-video=\"false\"\n  >\n    <div class=\"replay-container-backup\"></div>\n\n    <when expression=\"videoEndClosesCreative\">\n      <event-video-keyframe event=\"allAdsCompleted\">\n        <action-close></action-close>\n      </event-video-keyframe>\n    </when>\n  </video-player>\n</div>",
+                "css": "*{-webkit-tap-highlight-color: transparent;}\n\n/* === Background Color === */\n\n.background {\n  width: 100%;\n  height: 100%;\n  background: black;\n}\n\n/* === Video === */\n\n.video {\n  width: 100%;\n  height: 100%;\n  left: 50%;\n  top: 50%;\n  transform: translate(-50%,-50%);\n  max-width: unset !important;\n\n  .vertical & {\n    width: 100%;\n    height: 100%;\n  }\n}\n\nvideo {\n  object-position: center !important;\n}\n\n.video div:first-child {\n  padding-top: 0 !important;\n  width: 100%;\n  height: 100% !important;\n}\n\n/* === Video progress === */\n\n.video-progress-container {\n  background-color: #dddddd !important;\n  .video-progress{\n    background-color: crimson !important;\n  }\n}\n\n/* === Replay container === */\n\n.replay-container-backup {\n  width: 100%;\n  height: 100%;\n  position: absolute;\n  top: 0;\n  left: 0;\n  z-index: -1;\n}\n\n.replay-container-backup,\n.replay-container {\n  background-size: contain !important;\n  background-position: center !important;\n  background-repeat: no-repeat !important;\n  & svg {\n    width: 30px !important;\n    height: 30px !important;\n  }\n}\n\n.replay-container {\n  background-image: url({{replay.jpg}}) !important;\n}\n\n\n/* == Animations == */\n\n.background, .video, .video-progress-container {\n  opacity: 0;\n  transition: .3s;\n\n  .entering & {\n    opacity: 0;\n  }\n\n  .entered & {\n    opacity: 1;\n  }\n\n  .exiting & {\n    opacity: 0;\n  }\n}",
+                "js": ""
+              }
+            ]
+          ]
+        ],
+        "scenes": [
+          [
+            "full",
+            {
+              "initial": true,
+              "name": "full",
+              "html": "<video-component></video-component>\n<resize-full></resize-full>\n<when expression=\"closeable\">\n  <minimize type_=\"xtoclose\">\n    <action-close></action-close>\n  </minimize>\n</when>",
+              "css": "",
+              "js": ""
+            }
+          ]
+        ],
+        "isVerified": false,
+        "additional": {
+          "html": "<!-- <button-info></button-info> -->\n\n<!-- Uncomment the Argument below to allow Pause Video Outside Viewport -->\n<!-- <Argument name=\"pauseVideoOutsideViewport\" defaultValue=\"false\" private=\"true\" /> -->",
+          "css": ".mute-button, #minimize {\n    @media (max-width:350px){\n        width: 18px !important;\n        height: 18px !important;\n        img {\n            width: 18px !important;\n        }\n    }\n}\n\n/* == Animations == */\n\n.mute-button, #minimize {\n  opacity: 0;\n  transition: .3s;\n\n  .entering & {\n    opacity: 0;\n  }\n\n  .entered & {\n    opacity: 1;\n  }\n}",
+          "js": "/**\n* additional behaves as a component named \"additional\" so a render function can be used to control it\n*/\n\n// function render(props, children, ref) {}"
+        },
+        "externalPreviewContent": {
+          "contextDataOverride": []
+        },
+        "libraries": [],
+        "template": {
+          "id": "COV",
+          "version": 7
+        },
+        "contexts": [],
+        "metatags": [
+          "cov-express"
+        ],
+        "isPreset": false,
+        "isReadonly": false,
+        "version": "v7",
+        "configuration": null,
+        "country": null,
+        "category": null,
+        "agency": null,
+        "dataSources": []
+      }
+    },
+    "children": [
+      {
+        "type": "HtmlSnippets",
+        "props": {
+          "compiled": "\n      <definition>CiAgICAgICAgd2luZG93LkJ1dHRvbkluZm8gPSBmdW5jdGlvbiBCdXR0b25JbmZvKHByb3BzKSB7CiAgICAgICAgICAvLyB1c2VyIGRlZmluZWQgY29kZQogICAgICAgICAgLy8gT24gbW91bnQKZnVuY3Rpb24gb25Nb3VudEluZm8oZWwpIHsKCn0KCi8vIE9uIHVubW91bnQKZnVuY3Rpb24gb25Vbm1vdW50SW5mbyhlbCkgewoKfQoKLy8gPT09PSBEb24ndCB0b3VjaCBtZSA9PT09CmZ1bmN0aW9uIHJlbmRlcihwcm9wcywgY2hpbGRyZW4sIHJlZikgewogIHVzZUVmZmVjdCgoKSA9PiB7CiAgICBvbk1vdW50SW5mbyhyZWYuY3VycmVudCkKICAgIHJldHVybiAoKSA9PiBvblVubW91bnRJbmZvKHJlZi5jdXJyZW50KQogIH0sIFtdKQp9CiAgICAgICAgICAvLyBjb21wb25lbnQgY29kZQogICAgICAgICAgbGV0IHJlZiA9IHVzZVJlZigpOwogICAgICAgICAgcmV0dXJuIFJlYWN0LmNyZWF0ZUVsZW1lbnQoCiAgICAgICAgICAgIFJlYWN0LkZyYWdtZW50LAogICAgICAgICAgICB7fSwKICAgICAgICAgICAgUmVhY3QuY3JlYXRlRWxlbWVudCgic3R5bGUiLCB7fSwgIkBtZWRpYSAobWF4LXdpZHRoOiAzNTBweCkgeyAgIC5tdXRlLWJ1dHRvbiwgICAjbWluaW1pemUgeyAgICAgd2lkdGg6IDE4cHggIWltcG9ydGFudDsgICAgIGhlaWdodDogMThweCAhaW1wb3J0YW50OyAgIH0gICAubXV0ZS1idXR0b24gaW1nLCAgICNtaW5pbWl6ZSBpbWcgeyAgICAgd2lkdGg6IDE4cHggIWltcG9ydGFudDsgICB9IH0gLyogPT0gQW5pbWF0aW9ucyA9PSAqLyAubXV0ZS1idXR0b24sICNtaW5pbWl6ZSB7ICAgb3BhY2l0eTogMDsgICB0cmFuc2l0aW9uOiAwLjNzOyB9IC5lbnRlcmluZyAubXV0ZS1idXR0b24sIC5lbnRlcmluZyAjbWluaW1pemUgeyAgIG9wYWNpdHk6IDA7IH0gLmVudGVyZWQgLm11dGUtYnV0dG9uLCAuZW50ZXJlZCAjbWluaW1pemUgeyAgIG9wYWNpdHk6IDE7IH0gLmJ1dHRvbi1pbmZvIHsgICBiYWNrZ3JvdW5kLXBvc2l0aW9uOiBjZW50ZXI7ICAgYmFja2dyb3VuZC1yZXBlYXQ6IG5vLXJlcGVhdDsgICBiYWNrZ3JvdW5kLWltYWdlOiB1cmwoJ2h0dHBzOi8vY29uZmlnLnNlZWR0YWcuY29tL2FkVGVtcGxhdGVzUHJvL2luZm8uc3ZnJyk7ICAgYmFja2dyb3VuZC1zaXplOiBjb250YWluOyAgIGJhY2tncm91bmQtY29sb3I6IHJnYmEoMCwgMCwgMCwgMC42KTsgICB3aWR0aDogMjBweDsgICBoZWlnaHQ6IDIwcHg7ICAgcG9zaXRpb246IGFic29sdXRlOyAgIGJvdHRvbTogMDsgICBsZWZ0OiAwOyAgIHotaW5kZXg6IDk5OTk5OTk5OTk7IH0gIiksCiAgICAgICAgICAgIFJlYWN0LmNyZWF0ZUVsZW1lbnQoImJ1dHRvbi1pbmZvIiwge3JlZjogcmVmfSwgcmVuZGVyKHByb3BzLCBwcm9wcy5jaGlsZHJlbiwgcmVmKSkKICAgICAgICAgICkKICAgICAgICB9CiAgICAgIA==</definition>\n      <template id=\"button-info\">\n        <style>@media (max-width: 350px) {\n  .mute-button,\n  #minimize {\n    width: 18px !important;\n    height: 18px !important;\n  }\n  .mute-button img,\n  #minimize img {\n    width: 18px !important;\n  }\n}\n/* == Animations == */\n.mute-button,\n#minimize {\n  opacity: 0;\n  transition: 0.3s;\n}\n.entering .mute-button,\n.entering #minimize {\n  opacity: 0;\n}\n.entered .mute-button,\n.entered #minimize {\n  opacity: 1;\n}\n.button-info {\n  background-position: center;\n  background-repeat: no-repeat;\n  background-image: url('https://config.seedtag.com/adTemplatesPro/info.svg');\n  background-size: contain;\n  background-color: rgba(0, 0, 0, 0.6);\n  width: 20px;\n  height: 20px;\n  position: absolute;\n  bottom: 0;\n  left: 0;\n  z-index: 9999999999;\n}\n</style>\n        <template-component name=\"button-info\" component-script=\"data:application/script,base64;Ly8gT24gbW91bnQKZnVuY3Rpb24gb25Nb3VudEluZm8oZWwpIHsKCn0KCi8vIE9uIHVubW91bnQKZnVuY3Rpb24gb25Vbm1vdW50SW5mbyhlbCkgewoKfQoKLy8gPT09PSBEb24ndCB0b3VjaCBtZSA9PT09CmZ1bmN0aW9uIHJlbmRlcihwcm9wcywgY2hpbGRyZW4sIHJlZikgewogIHVzZUVmZmVjdCgoKSA9PiB7CiAgICBvbk1vdW50SW5mbyhyZWYuY3VycmVudCkKICAgIHJldHVybiAoKSA9PiBvblVubW91bnRJbmZvKHJlZi5jdXJyZW50KQogIH0sIFtdKQp9\">\n          <!--\n  To enable the button info, uncomment that section in \"additional files > index.html\"\n-->\n<a href=\"https://www.seedtag.com/privacy/\" target=\"_blank\">\n  <div id=\"button-info\" class=\"button-info\"></div>\n</a>\n        </template-component>\n      </template>\n    \n\n      \n      <template id=\"video-component\">\n        <style>@media (max-width: 350px) {\n  .mute-button,\n  #minimize {\n    width: 18px !important;\n    height: 18px !important;\n  }\n  .mute-button img,\n  #minimize img {\n    width: 18px !important;\n  }\n}\n/* == Animations == */\n.mute-button,\n#minimize {\n  opacity: 0;\n  transition: 0.3s;\n}\n.entering .mute-button,\n.entering #minimize {\n  opacity: 0;\n}\n.entered .mute-button,\n.entered #minimize {\n  opacity: 1;\n}\n* {\n  -webkit-tap-highlight-color: transparent;\n}\n/* === Background Color === */\n.background {\n  width: 100%;\n  height: 100%;\n  background: black;\n}\n/* === Video === */\n.video {\n  width: 100%;\n  height: 100%;\n  left: 50%;\n  top: 50%;\n  transform: translate(-50%, -50%);\n  max-width: unset !important;\n}\n.vertical .video {\n  width: 100%;\n  height: 100%;\n}\nvideo {\n  object-position: center !important;\n}\n.video div:first-child {\n  padding-top: 0 !important;\n  width: 100%;\n  height: 100% !important;\n}\n/* === Video progress === */\n.video-progress-container {\n  background-color: #dddddd !important;\n}\n.video-progress-container .video-progress {\n  background-color: crimson !important;\n}\n/* === Replay container === */\n.replay-container-backup {\n  width: 100%;\n  height: 100%;\n  position: absolute;\n  top: 0;\n  left: 0;\n  z-index: -1;\n}\n.replay-container-backup,\n.replay-container {\n  background-size: contain !important;\n  background-position: center !important;\n  background-repeat: no-repeat !important;\n}\n.replay-container-backup svg,\n.replay-container svg {\n  width: 30px !important;\n  height: 30px !important;\n}\n.replay-container {\n  background-image: url({{replay.jpg}}) !important;\n}\n/* == Animations == */\n.background,\n.video,\n.video-progress-container {\n  opacity: 0;\n  transition: 0.3s;\n}\n.entering .background,\n.entering .video,\n.entering .video-progress-container {\n  opacity: 0;\n}\n.entered .background,\n.entered .video,\n.entered .video-progress-container {\n  opacity: 1;\n}\n.exiting .background,\n.exiting .video,\n.exiting .video-progress-container {\n  opacity: 0;\n}\n</style>\n        <template-component name=\"video-component\" component-script=\"data:application/script,base64;\">\n          <div class=\"background\">\n  <video-player\n    id=\"video\"\n    class=\"video\"\n    vast=\"https://dvrtr.innovid.com/v3/vast?_media=1&ctx=15925853&cmp=240665&sid=8091&plc=5394771&advid=4897&adsrv=118&psf=0&_vast=https%3A%2F%2Frtr.innovid.com%2Fr1.6a15f6f7db3de5.27626145%3Bcb%3D%7Bs1%7D%3Fgdpr%3D%24%7BGDPR%7D%26gdpr_consent%3D%7Bs2%7D&_s1=[timestamp]&_s2=${GDPR_CONSENT_452}&_api=[APIFRAMEWORKS]&_ssm=[SERVERSIDE]&_tsm=[TIMESTAMP]&gdpr=${GDPR}&gdpr_consent=${GDPR_CONSENT_126}&_abm=[APPBUNDLE]&_pum=[PAGEURL]\"\n    allow-replay=\"allowReplay\"\n    mute-over-video=\"false\"\n  >\n    <div class=\"replay-container-backup\"></div>\n\n    <when expression=\"videoEndClosesCreative\">\n      <event-video-keyframe event=\"allAdsCompleted\">\n        <action-close></action-close>\n      </event-video-keyframe>\n    </when>\n  </video-player>\n</div>\n        </template-component>\n      </template>\n    \n\n      <definition>CiAgICAgICAgd2luZG93LkFkZGl0aW9uYWwgPSBmdW5jdGlvbiBBZGRpdGlvbmFsKHByb3BzKSB7CiAgICAgICAgICAvLyB1c2VyIGRlZmluZWQgY29kZQogICAgICAgICAgLyoqCiogYWRkaXRpb25hbCBiZWhhdmVzIGFzIGEgY29tcG9uZW50IG5hbWVkICJhZGRpdGlvbmFsIiBzbyBhIHJlbmRlciBmdW5jdGlvbiBjYW4gYmUgdXNlZCB0byBjb250cm9sIGl0CiovCgovLyBmdW5jdGlvbiByZW5kZXIocHJvcHMsIGNoaWxkcmVuLCByZWYpIHt9CiAgICAgICAgICAvLyBjb21wb25lbnQgY29kZQogICAgICAgICAgbGV0IHJlZiA9IHVzZVJlZigpOwogICAgICAgICAgcmV0dXJuIFJlYWN0LmNyZWF0ZUVsZW1lbnQoCiAgICAgICAgICAgIFJlYWN0LkZyYWdtZW50LAogICAgICAgICAgICB7fSwKICAgICAgICAgICAgUmVhY3QuY3JlYXRlRWxlbWVudCgic3R5bGUiLCB7fSwgIkBtZWRpYSAobWF4LXdpZHRoOiAzNTBweCkgeyAgIC5tdXRlLWJ1dHRvbiwgICAjbWluaW1pemUgeyAgICAgd2lkdGg6IDE4cHggIWltcG9ydGFudDsgICAgIGhlaWdodDogMThweCAhaW1wb3J0YW50OyAgIH0gICAubXV0ZS1idXR0b24gaW1nLCAgICNtaW5pbWl6ZSBpbWcgeyAgICAgd2lkdGg6IDE4cHggIWltcG9ydGFudDsgICB9IH0gLyogPT0gQW5pbWF0aW9ucyA9PSAqLyAubXV0ZS1idXR0b24sICNtaW5pbWl6ZSB7ICAgb3BhY2l0eTogMDsgICB0cmFuc2l0aW9uOiAwLjNzOyB9IC5lbnRlcmluZyAubXV0ZS1idXR0b24sIC5lbnRlcmluZyAjbWluaW1pemUgeyAgIG9wYWNpdHk6IDA7IH0gLmVudGVyZWQgLm11dGUtYnV0dG9uLCAuZW50ZXJlZCAjbWluaW1pemUgeyAgIG9wYWNpdHk6IDE7IH0gIiksCiAgICAgICAgICAgIFJlYWN0LmNyZWF0ZUVsZW1lbnQoImFkZGl0aW9uYWwiLCB7cmVmOiByZWZ9LCByZW5kZXIocHJvcHMsIHByb3BzLmNoaWxkcmVuLCByZWYpKQogICAgICAgICAgKQogICAgICAgIH0KICAgICAg</definition>\n      <template id=\"additional\">\n        <style>@media (max-width: 350px) {\n  .mute-button,\n  #minimize {\n    width: 18px !important;\n    height: 18px !important;\n  }\n  .mute-button img,\n  #minimize img {\n    width: 18px !important;\n  }\n}\n/* == Animations == */\n.mute-button,\n#minimize {\n  opacity: 0;\n  transition: 0.3s;\n}\n.entering .mute-button,\n.entering #minimize {\n  opacity: 0;\n}\n.entered .mute-button,\n.entered #minimize {\n  opacity: 1;\n}\n</style>\n        <template-component name=\"additional\" component-script=\"data:application/script,base64;LyoqCiogYWRkaXRpb25hbCBiZWhhdmVzIGFzIGEgY29tcG9uZW50IG5hbWVkICJhZGRpdGlvbmFsIiBzbyBhIHJlbmRlciBmdW5jdGlvbiBjYW4gYmUgdXNlZCB0byBjb250cm9sIGl0CiovCgovLyBmdW5jdGlvbiByZW5kZXIocHJvcHMsIGNoaWxkcmVuLCByZWYpIHt9\">\n          <!-- <button-info></button-info> -->\n\n<!-- Uncomment the Argument below to allow Pause Video Outside Viewport -->\n<!-- <Argument name=\"pauseVideoOutsideViewport\" defaultValue=\"false\" private=\"true\" /> -->\n        </template-component>\n      </template>\n    \n<scene-group>\n\n      <scene name=\"full\" initial=\"true\">\n        <video-component></video-component>\n<resize-full></resize-full>\n<when expression=\"closeable\">\n  <minimize type_=\"xtoclose\">\n    <action-close></action-close>\n  </minimize>\n</when>\n        <style>@media (max-width: 350px) {\n  .mute-button,\n  #minimize {\n    width: 18px !important;\n    height: 18px !important;\n  }\n  .mute-button img,\n  #minimize img {\n    width: 18px !important;\n  }\n}\n/* == Animations == */\n.mute-button,\n#minimize {\n  opacity: 0;\n  transition: 0.3s;\n}\n.entering .mute-button,\n.entering #minimize {\n  opacity: 0;\n}\n.entered .mute-button,\n.entered #minimize {\n  opacity: 1;\n}\n</style>\n        \n      </scene>\n    \n</scene-group>\n"
+        },
+        "children": []
+      },
+      {
+        "type": "Assets",
+        "children": [
+          {
+            "type": "Asset",
+            "props": {
+              "id": "replay.jpg",
+              "name": "replay.jpg",
+              "type": null,
+              "value": "https://creatives.seedtag.com/62792535453f5f002b9dad33/1655134861326.jpg"
+            },
+            "children": []
+          }
+        ]
+      },
+      {
+        "type": "Libraries",
+        "props": {
+          "libraries": []
+        },
+        "children": []
+      },
+      {
+        "type": "EngagementMetrics",
+        "props": {
+          "elements": {
+            "button-info": "element_0",
+            "video": "element_1"
+          }
+        },
+        "children": []
+      },
+      {
+        "type": "Contexts",
+        "children": []
+      },
+      {
+        "type": "VideoOutlet",
+        "props": {
+          "vast": "https://dvrtr.innovid.com/v3/vast?_media=1&ctx=15925853&cmp=240665&sid=8091&plc=5394771&advid=4897&adsrv=118&psf=0&_vast=https%3A%2F%2Frtr.innovid.com%2Fr1.6a15f6f7db3de5.27626145%3Bcb%3D%7Bs1%7D%3Fgdpr%3D%24%7BGDPR%7D%26gdpr_consent%3D%7Bs2%7D&_s1=[timestamp]&_s2=${GDPR_CONSENT_452}&_api=[APIFRAMEWORKS]&_ssm=[SERVERSIDE]&_tsm=[TIMESTAMP]&gdpr=${GDPR}&gdpr_consent=${GDPR_CONSENT_126}&_abm=[APPBUNDLE]&_pum=[PAGEURL]"
+        },
+        "children": []
+      },
+      {
+        "type": "Vasts",
+        "children": [
+          {
+            "type": "Vast",
+            "props": {
+              "url": "https://dvrtr.innovid.com/v3/vast?_media=1&ctx=15925853&cmp=240665&sid=8091&plc=5394771&advid=4897&adsrv=118&psf=0&_vast=https%3A%2F%2Frtr.innovid.com%2Fr1.6a15f6f7db3de5.27626145%3Bcb%3D%7Bs1%7D%3Fgdpr%3D%24%7BGDPR%7D%26gdpr_consent%3D%7Bs2%7D&_s1=[timestamp]&_s2=${GDPR_CONSENT_452}&_api=[APIFRAMEWORKS]&_ssm=[SERVERSIDE]&_tsm=[TIMESTAMP]&gdpr=${GDPR}&gdpr_consent=${GDPR_CONSENT_126}&_abm=[APPBUNDLE]&_pum=[PAGEURL]"
+            },
+            "children": [
+              {
+                "type": "MediaFile",
+                "props": {
+                  "url": "https://s-static.innovid.com/media/encoded/05_26/1278107/2_source_240665_1478453.mp4",
+                  "width": 16,
+                  "height": 9,
+                  "bitrate": 800,
+                  "type_": "mp4"
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -33,7 +33,7 @@ warnings = 0
 def check(name, fn, gating=True):
     """Corre un chequeo. Si `gating=False`, un fallo se muestra como warning
     amarillo pero NO bloquea el arranque (no suma a `errors`). Se usa para
-    dependencias que ya no están en el flujo (p.ej. Filestage)."""
+    chequeos informativos opcionales."""
     global errors, warnings
     try:
         ok, detail = fn()
@@ -63,10 +63,9 @@ def check_deps():
     import slack_sdk  # noqa: F401
     import dotenv  # noqa: F401
     # Extras NO críticos para el core del bot: gdown (carpetas de Drive; si falta
-    # degrada con aviso en Slack), flask (dashboard), playwright (legacy Filestage,
-    # fuera del flujo). No bloquean el burn-in.
+    # degrada con aviso en Slack), flask (dashboard). No bloquean el burn-in.
     have, missing = [], []
-    for mod in ("gdown", "flask", "playwright"):
+    for mod in ("gdown", "flask"):
         try:
             __import__(mod)
             have.append(mod)
@@ -79,8 +78,6 @@ def check_deps():
 
 
 def check_env():
-    # FILESTAGE_SESSION_COOKIE ya NO es requerida: Filestage está fuera del
-    # flujo. Su cookie caduca con la sesión del navegador; no debe bloquear.
     needed = [
         "JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY",
         "SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID",
@@ -101,28 +98,6 @@ def check_slack():
     if not r.get("ok"):
         return False, f"auth_test fallo: {r}"
     return True, f"bot @{r['user']} en team {r['team']}"
-
-
-def check_filestage():
-    import requests
-    cookie = os.getenv("FILESTAGE_SESSION_COOKIE")
-    if not cookie or cookie == "...":
-        return False, "FILESTAGE_SESSION_COOKIE vacio"
-    r = requests.get(
-        "https://api.filestage.io/projects",
-        cookies={"registeredSessionId": cookie},
-        params={"team_id": "e16f96c4de9a0c1b11bbebab1ac09104", "viewArchived": "false"},
-        headers={"Accept": "*/*", "Origin": "https://app.filestage.io",
-                 "Referer": "https://app.filestage.io/"},
-        timeout=15,
-    )
-    if r.status_code == 200:
-        try:
-            n = len(r.json())
-        except Exception:
-            n = "?"
-        return True, f"HTTP 200, {n} folders accesibles"
-    return False, f"HTTP {r.status_code} — cookie caducada (ignorable, fuera del flujo)"
 
 
 def check_studio():
@@ -163,7 +138,6 @@ check("ffmpeg disponible", check_ffmpeg)
 check("Python deps", check_deps)
 check(".env completo", check_env)
 check("Slack bot autenticado", check_slack)
-check("Filestage cookie (informativo, fuera del flujo)", check_filestage, gating=False)
 check("Studio JWT bajo el bot", check_studio)
 check("Jira polling + customfields", check_jira)
 

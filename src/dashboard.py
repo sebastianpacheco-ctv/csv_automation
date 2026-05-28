@@ -242,6 +242,9 @@ def _build_state() -> dict:
 # ── API ─────────────────────────────────────────────────────────────────────
 @app.get("/api/state")
 def api_state():
+    """Estado completo del bot que consume el frontend del dashboard: bot
+    status (alive/paused/PID/current activity), cola 1597 (cacheada 25s),
+    sidecars (seen/canceled/pending_studio), JWT days left, log tail, historial."""
     return jsonify(_build_state())
 
 

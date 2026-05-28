@@ -22,6 +22,8 @@ class VideoConverter:
         self.last_bitrate = None
 
     def get_duration(self, input_path: Path) -> float:
+        """Duración del video en segundos vía ffprobe. Lanza RuntimeError si
+        ffprobe falla o el stream no tiene metadata de duración."""
         cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
                "-show_streams", str(input_path)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -33,6 +35,11 @@ class VideoConverter:
         raise RuntimeError("No se pudo obtener duración")
 
     def convert(self, input_path: Path, override_bitrate_mbps: int = None) -> Path | None:
+        """Convierte `input_path` al preset Mezzanine TradeDesk (H.264 1920×1080
+        29.97fps, AAC 256k, -24 LUFS). Bitrate por duración: ≤duration_threshold
+        → bitrate_short Mbps, > → bitrate_long. `override_bitrate_mbps` fuerza
+        el bitrate (usado para target-size en el flujo Open Web). Devuelve la
+        ruta del `.mp4` convertido, o None si FFmpeg falla."""
         try:
             duration = self.get_duration(input_path)
         except Exception as e:

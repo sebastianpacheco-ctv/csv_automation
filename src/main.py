@@ -29,7 +29,6 @@ from dotenv import load_dotenv
 from jira_client import JiraClient
 from slack_client import SlackClient
 from converter import VideoConverter
-from uploader import FilestageUploader
 from studio_api import StudioAPIClient, StudioVideoNotReadyError, StudioJWTExpiredError
 
 load_dotenv()
@@ -182,8 +181,10 @@ def _status_merge(**fields) -> None:
         data.update(fields)
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         _STATUS_PATH.write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        # Falla del sidecar de status no es fatal (heartbeat ruidoso); loguear
+        # como warning para diagnóstico si pasa repetidamente.
+        log.warning(f"No se pudo escribir status sidecar: {e}")
 
 
 def _set_activity(text) -> None:
@@ -574,8 +575,10 @@ def _format_deadline(deadline_raw: str) -> str:
         try:
             dt = datetime.fromisoformat(deadline_raw.replace(".000", ""))
             return dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
-        except Exception:
-            pass
+        except Exception as e:
+            # Formato de fecha inesperado de Jira: log debug y caemos al fallback
+            # de los primeros 10 chars (YYYY-MM-DD).
+            log.debug(f"_format_deadline: parse falló para {deadline_raw!r}: {e}")
     return deadline_raw[:10]
 
 
@@ -662,7 +665,12 @@ def _build_video_plans(video_paths: list, canonical_stem: str,
 
 def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
                    converter: VideoConverter, studio: StudioAPIClient,
-                   filestage: FilestageUploader, gcs=None):
+                   gcs=None):
+    """Procesa un ticket CSV/COV detectado en la cola 1597 end-to-end:
+    descarga el/los videos del cliente → confirma plan con el equipo en Slack →
+    convierte con FFmpeg → sube a Studio (crea creative) → adjunta + comenta en
+    Jira → transiciona To Build → Building. Tolera errores parcialmente: cada
+    paso intenta el siguiente, registra en _record_history y avisa en Slack."""
 
     ticket_key = issue["key"]
     ticket_url = f"{os.getenv('JIRA_BASE_URL')}/browse/{ticket_key}"
@@ -998,6 +1006,12 @@ def process_ticket(issue: dict, jira: JiraClient, slack: SlackClient,
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 def main():
+    """Entry point del bot. Inicializa clientes (Jira/Slack/Converter/Studio/GCS),
+    los sidecars de control y estado para el dashboard, el canal de aprobaciones,
+    y corre el loop infinito: heartbeat de Studio + comandos del dashboard +
+    segunda pasada de Studio + comandos Slack (status, reactivar) +
+    polling de la cola 1597 (con `paused` en off) → procesa nuevos tickets
+    secuencialmente. Escribe `.bot_status.json` al final de cada iteración."""
     log.info("🚀 CSV Ticket Automation arrancando...")
 
     jira = JiraClient(
@@ -1026,13 +1040,6 @@ def main():
     studio = StudioAPIClient(
         jwt_cookie=os.getenv("STUDIO_JWT_COOKIE"),
         sidecar_path=Path(os.getenv("TMP_DIR", "./tmp")) / ".studio_jwt",
-    )
-    filestage = FilestageUploader(
-        session_cookie=os.getenv("FILESTAGE_SESSION_COOKIE"),
-        api_key=os.getenv("FILESTAGE_API_KEY"),
-        email=os.getenv("STUDIO_EMAIL"),
-        password=os.getenv("STUDIO_PASSWORD"),
-        on_refresh_failure=slack.send_message,
     )
 
     # GCS uploader — inerte si GCS_BUCKET no esta seteada (caso burn-in local).
@@ -1079,8 +1086,9 @@ def main():
             if d.get("ts") == thread_ts and d.get("decision"):
                 approval_path.unlink()
                 return d["decision"]
-        except Exception:
-            pass
+        except Exception as e:
+            # JSON malformado o IO; el dashboard lo reintenta en el siguiente click.
+            log.warning(f"_approval_check: error leyendo {approval_path.name}: {e}")
         return None
     slack.approval_check = _approval_check
 
@@ -1204,7 +1212,7 @@ def main():
                 for issue in new:
                     seen_tickets.add(issue["key"])
                     _save_seen_tickets(seen_tickets_path, seen_tickets)
-                    process_ticket(issue, jira, slack, converter, studio, filestage, gcs=gcs)
+                    process_ticket(issue, jira, slack, converter, studio, gcs=gcs)
 
             # Estado para el dashboard (liveness + métricas básicas).
             _write_bot_status(

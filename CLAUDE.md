@@ -42,7 +42,7 @@ csv-automation/
 │   ├── main.py            # Orquestador, detección, loop multi-video, comandos Slack
 │   ├── jira_client.py     # API Jira (POST /search/jql cola 1597, forms.cloud para QR, transiciones)
 │   ├── slack_client.py    # Bot Slack — notificación con plan, wait_for_ticket_response, reactivar
-│   ├── converter.py       # FFmpeg — bitrate adaptativo + override para recompresión
+│   ├── converter.py       # FFmpeg — bitrate adaptativo (CTV 30/15 Mbps; OW por target de tamaño)
 │   ├── studio_api.py      # Cliente GraphQL Studio (pipeline selector_name, retry name-exists)
 │   ├── uploader.py        # FilestageUploader — DESACTIVADO del flujo (se conserva por si acaso)
 │   └── test_real_ticket.py # Script de integración end-to-end
@@ -351,7 +351,7 @@ python3 scripts/preflight.py          # valida todo el stack (7 checks)
 ## Estado verificado el 2026-05-27 (burn-in en curso)
 Ejecutar `python3 scripts/preflight.py` para revalidar.
 - ✅ Flujo completo end-to-end funcionando (Studio COMPLETED en ~20-30s con `ctv-base`).
-- ✅ QR skip, multi-mp4, threading Slack, reactivar, recompresión >150MB, retry name-exists.
+- ✅ QR skip, multi-mp4, threading Slack, reactivar, manejo de >100MB (salta adjunto, conserva creative), retry name-exists.
 - ✅ launchd sobrevivió sleep nocturno (auto-restart al login).
 - ✅ Repo sincronizado en `github.com/sebastianpacheco-ctv/csv_automation`.
 

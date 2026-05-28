@@ -580,6 +580,9 @@ class JiraClient:
         return ""
 
     def attach_file(self, ticket_key: str, file_path: Path):
+        """Sube `file_path` como adjunto al ticket `ticket_key`. Lanza HTTPError
+        si supera el límite de adjuntos de la instancia (~100 MB en SDS) o si
+        el archivo no existe. El caller decide qué hacer con el error."""
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/attachments"
         with open(file_path, "rb") as f:
             r = requests.post(url, auth=self.auth,
@@ -589,6 +592,8 @@ class JiraClient:
         log.info(f"Adjunto subido a {ticket_key}")
 
     def add_comment(self, ticket_key: str, text: str):
+        """Comentario simple (texto plano) en el ticket. Para comentarios con
+        formato/links usar `add_comment_adf` con un doc ADF construido."""
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/comment"
         body = {
             "body": {
@@ -771,6 +776,10 @@ class JiraClient:
         return True
 
     def transition(self, ticket_key: str, transition_id: str, fields: dict | None = None):
+        """Ejecuta una transición de workflow (e.g. Triage→To Build, To Build→Building).
+        `transition_id` se obtiene de `get_transitions()`. Si la transición exige
+        fields que no están en su screen, hay que setearlos antes con `set_fields()`
+        — Jira rechaza el body `fields` si el screen no los acepta."""
         url = f"{self.base_url}/rest/api/3/issue/{ticket_key}/transitions"
         body: dict = {"transition": {"id": transition_id}}
         if fields:

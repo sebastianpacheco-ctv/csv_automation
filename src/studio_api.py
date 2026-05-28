@@ -621,6 +621,9 @@ class StudioAPIClient:
         return stem
 
     def get_video(self, video_id: str) -> dict:
+        """Devuelve metadata del video en Studio (state, formats[], duration, etc).
+        Útil para chequear si quedó COMPLETED y leer los formatos disponibles
+        antes de construir el adTemplate del creative."""
         return self._graphql(Q_GET_VIDEO_BY_ID, {"id": video_id})["getVideoById"]
 
     def wait_video_ready(self, video_id: str,
@@ -680,6 +683,10 @@ class StudioAPIClient:
         return data["createCovCreative"]["id"]
 
     def get_creative(self, creative_id: str) -> dict:
+        """Devuelve el modelo del creative en Studio (campos definidos en
+        Q_GET_CREATIVE_BY_ID: id, name, size, productFamily, manifest,
+        creativeTree, templateShortCode, status). NO incluye country/category/
+        configuration por default (la query es minimal)."""
         return self._graphql(Q_GET_CREATIVE_BY_ID, {"id": creative_id})["getCreativeById"]
 
     def update_creative(self, creative_id: str, creative_input: dict) -> str:
@@ -738,6 +745,8 @@ class StudioAPIClient:
 
     @staticmethod
     def map_country(jira_operator_entity: str) -> str:
+        """Mapea el `customfield_14324` (Operator Entity) de Jira a una country
+        válida de Studio. Default: 'international' si no hay match."""
         return COUNTRY_MAP.get((jira_operator_entity or "").lower().strip(),
                                "international")
 

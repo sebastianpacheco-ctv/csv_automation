@@ -38,6 +38,11 @@ class SlackClient:
                           operator_entity: str, csv_qty: int = 0,
                           multiformat: bool = False, deadline: str = "",
                           plan: dict | None = None) -> dict:
+        """Postea la notificación inicial del ticket en el canal `#csv-tickets` con
+        el plan de procesamiento y pide confirmación. Devuelve {'channel', 'ts'}
+        del mensaje para que el caller pueda postear progreso en el hilo y
+        esperar respuesta. `plan` se renderiza como una lista de videos con
+        nombre canónico, duración y peso estimado."""
 
         # Cantidades del form. OJO: estas son cantidades de UNIDAD, NO del canal.
         # El canal (CTV / Open Web) vive aparte en la pregunta 'Channels' del form.
@@ -104,7 +109,7 @@ class SlackClient:
                                          "• `ok` → procesar con el plan\n"
                                          f"• `no` → cancelar este ticket (luego podes reactivarlo con `reactivar {ticket_key}` en el canal)\n"
                                          "Timeout 1 hora.\n"
-                                         "(Si supera 150 MB, te preguntare si recomprimo.)")}})
+                                         "(Si el .mp4 final supera 100 MB queda solo en Studio; el creative igual sale OK.)")}})
 
         r = self.client.chat_postMessage(
             channel=self.channel_id,
@@ -114,6 +119,8 @@ class SlackClient:
         return {"channel": r["channel"], "ts": r["ts"]}
 
     def send_message(self, text: str):
+        """Postea un mensaje en el canal principal `#csv-tickets` (no en un hilo).
+        Para hilos usar `send_thread_message`."""
         self.client.chat_postMessage(channel=self.channel_id, text=text)
 
     def send_thread_message(self, thread_ts: str, text: str) -> str:
